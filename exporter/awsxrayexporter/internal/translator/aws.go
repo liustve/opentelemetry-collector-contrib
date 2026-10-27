@@ -118,6 +118,13 @@ func makeAws(attributes map[string]pcommon.Value, resource pcommon.Resource, log
 		operation = awsOperation.Str()
 	} else if rpcMethod, ok := attributes[string(conventions.RPCMethodKey)]; ok {
 		operation = rpcMethod.Str()
+		if metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
+			if system, ok := attributes[string(conventions.RPCSystemNameKey)]; ok && system.Str() == awsAPIRPCSystem {
+				if _, method, ok := strings.Cut(operation, "/"); ok && method != "" {
+					operation = method
+				}
+			}
+		}
 	}
 
 	for key, value := range attributes {

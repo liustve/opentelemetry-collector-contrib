@@ -4,6 +4,7 @@
 package translator // import "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/awsxrayexporter/internal/translator"
 
 import (
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -43,7 +44,8 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			info.Request.Method = awsxray.String(value.Str())
+			selected, _ := httpAttribute(span.Attributes(), string(conventions.HTTPRequestMethodKey), "http.method")
+			info.Request.Method = awsxray.String(selected.Str())
 			hasHTTP = true
 		case string("http.client_ip"):
 			// TODO: Remove when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -59,7 +61,8 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			info.Request.UserAgent = awsxray.String(value.Str())
+			selected, _ := httpAttribute(span.Attributes(), string(conventions.UserAgentOriginalKey), "http.user_agent")
+			info.Request.UserAgent = awsxray.String(selected.Str())
 			hasHTTP = true
 		case string("http.status_code"), string(conventions.HTTPResponseStatusCodeKey):
 			// TODO: Remove v0 key handling when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -67,7 +70,8 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			info.Response.Status = aws.Int64(value.Int())
+			selected, _ := httpAttribute(span.Attributes(), string(conventions.HTTPResponseStatusCodeKey), "http.status_code")
+			info.Response.Status = aws.Int64(selected.Int())
 			hasHTTP = true
 		case string("http.url"), string(conventions.URLFullKey):
 			// TODO: Remove v0 key handling when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -75,7 +79,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			urlParts[string("http.url")] = value.Str()
+			urlParts[key] = value.Str()
 			hasHTTP = true
 			hasHTTPRequestURLAttributes = true
 		case string("http.scheme"), string(conventions.URLSchemeKey):
@@ -84,7 +88,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			urlParts[string("http.scheme")] = value.Str()
+			urlParts[key] = value.Str()
 			hasHTTP = true
 		case string("http.host"):
 			// TODO: Remove when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -173,6 +177,9 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				}
 				hasHTTPRequestURLAttributes = true
 				hasNetPeerAddr = true
+				urlParts[key] = value.Str()
+			} else {
+				filtered[key] = value
 			}
 		case string(conventions.NetworkPeerPortKey):
 			if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
@@ -186,6 +193,8 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 		case string(conventions.ClientAddressKey):
 			if net.ParseIP(value.Str()) != nil {
 				info.Request.ClientIP = awsxray.String(value.Str())
+			} else {
+				filtered[key] = value
 			}
 		case string(conventions.URLPathKey):
 			urlParts[key] = value.Str()
@@ -206,12 +215,22 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 		}
 	}
 
+	// Resolve forwarded client information after iteration so an earlier
+	// network peer or legacy client IP cannot override the preferred value.
+	if value, ok := httpAttribute(span.Attributes(), string(conventions.ClientAddressKey), "http.client_ip"); ok && net.ParseIP(value.Str()) != nil {
+		info.Request.ClientIP = awsxray.String(value.Str())
+	} else if value, ok := httpAttribute(span.Attributes(), string(conventions.NetworkPeerAddressKey), "net.peer.ip"); ok && net.ParseIP(value.Str()) != nil {
+		info.Request.ClientIP = awsxray.String(value.Str())
+	}
+
 	if !hasNetPeerAddr && info.Request.ClientIP != nil {
 		info.Request.XForwardedFor = aws.Bool(true)
 	}
 
 	if !hasHTTP {
 		// Didn't have any HTTP-specific information so don't need to fill it in segment
+		// Shared network attributes still belong to DB and RPC spans.
+		maps.Insert(filtered, span.Attributes().All())
 		return filtered, nil
 	}
 
@@ -245,16 +264,26 @@ func extractResponseSizeFromEvents(span ptrace.Span) int64 {
 }
 
 func extractResponseSizeFromAttributes(attributes pcommon.Map) int64 {
+	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if size, ok := attributes.Get(string(conventions.HTTPResponseBodySizeKey)); ok {
+			return size.Int()
+		}
+	}
+	if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if size, ok := attributes.Get("http.response_content_length"); ok {
+			return size.Int()
+		}
+	}
 	typeVal, ok := attributes.Get("message.type")
 	if ok && typeVal.Str() == "RECEIVED" {
-		// TODO: Remove old key when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
-		if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
-			if sizeVal, ok := attributes.Get(string("messaging.message_payload_size_bytes")); ok {
+		if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+			if sizeVal, ok := attributes.Get(string(conventions.MessagingMessageBodySizeKey)); ok {
 				return sizeVal.Int()
 			}
 		}
-		if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
-			if sizeVal, ok := attributes.Get(string(conventions.MessagingMessageBodySizeKey)); ok {
+		// TODO: Remove old key when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
+		if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+			if sizeVal, ok := attributes.Get(string("messaging.message_payload_size_bytes")); ok {
 				return sizeVal.Int()
 			}
 		}
@@ -266,13 +295,13 @@ func constructClientURL(urlParts map[string]string) string {
 	// follows OpenTelemetry specification-defined combinations for client spans described in
 	// https://github.com/open-telemetry/semantic-conventions/blob/main/docs/http/http-spans.md#http-client
 
-	url, ok := urlParts[string("http.url")]
+	url, ok := httpURLPart(urlParts, string(conventions.URLFullKey), "http.url")
 	if ok {
 		// full URL available so no need to assemble
 		return url
 	}
 
-	scheme, ok := urlParts[string("http.scheme")]
+	scheme, ok := httpURLPart(urlParts, string(conventions.URLSchemeKey), "http.scheme")
 	if !ok {
 		scheme = "http"
 	}
@@ -292,57 +321,43 @@ func constructClientURL(urlParts map[string]string) string {
 				host, ok = urlParts[string("net.peer.ip")]
 				if !ok {
 					host = v1Host
+					if host == "" {
+						host = urlParts[string(conventions.NetworkPeerAddressKey)]
+					}
 				}
 			}
 		}
-		port, ok = urlParts[string(conventions.ServerPortKey)]
-		if !ok || !emitV1 {
-			port, ok = urlParts[string("net.peer.port")]
-			if !ok {
-				port = urlParts[string(conventions.NetworkPeerPortKey)]
-			}
+		port, ok = httpURLPart(urlParts, string(conventions.ServerPortKey), "net.peer.port")
+		if !ok {
+			port = urlParts[string(conventions.NetworkPeerPortKey)]
 		}
 	}
-	url = scheme + "://" + host
-	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
-		url += ":" + port
-	}
-	target, ok := urlParts[string("http.target")]
-	if ok {
-		url += target
-	} else {
-		path, ok := urlParts[string(conventions.URLPathKey)]
-		if ok {
-			url += path
-		} else {
-			url += "/"
-		}
-		query, ok := urlParts[string(conventions.URLQueryKey)]
-		if ok {
-			if !strings.HasPrefix(query, "?") {
-				query = "?" + query
-			}
-			url += query
-		}
-	}
-	return url
+	url = scheme + "://" + httpURLAuthority(host, port, scheme)
+	return appendHTTPTarget(url, urlParts)
 }
 
 func constructServerURL(urlParts map[string]string) string {
 	// follows OpenTelemetry specification-defined combinations for server spans described in
 	// https://github.com/open-telemetry/semantic-conventions/blob/main/docs/http/http-spans.md#http-server
 
-	url, ok := urlParts[string("http.url")]
+	url, ok := httpURLPart(urlParts, string(conventions.URLFullKey), "http.url")
 	if ok {
 		// full URL available so no need to assemble
 		return url
 	}
 
-	scheme, ok := urlParts[string("http.scheme")]
+	scheme, ok := httpURLPart(urlParts, string(conventions.URLSchemeKey), "http.scheme")
 	if !ok {
 		scheme = "http"
 	}
 	port := ""
+	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if host, hasServerAddress := urlParts[string(conventions.ServerAddressKey)]; hasServerAddress {
+			port, _ = httpURLPart(urlParts, string(conventions.ServerPortKey), "net.host.port")
+			url = scheme + "://" + httpURLAuthority(host, port, scheme)
+			return appendHTTPTarget(url, urlParts)
+		}
+	}
 	host, ok := urlParts[string("http.host")]
 	if !ok {
 		host, ok = urlParts[string("http.server_name")]
@@ -363,27 +378,56 @@ func constructServerURL(urlParts map[string]string) string {
 			}
 		}
 	}
-	url = scheme + "://" + host
-	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
-		url += ":" + port
+	url = scheme + "://" + httpURLAuthority(host, port, scheme)
+	return appendHTTPTarget(url, urlParts)
+}
+
+func httpURLPart(parts map[string]string, stableKey, legacyKey string) (string, bool) {
+	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if value, ok := parts[stableKey]; ok {
+			return value, true
+		}
 	}
-	target, ok := urlParts[string("http.target")]
-	if ok {
-		url += target
+	if value, ok := parts[legacyKey]; ok {
+		return value, true
+	}
+	value, ok := parts[stableKey]
+	return value, ok
+}
+
+func httpURLAuthority(host, port, scheme string) string {
+	if !metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
+			return host + ":" + port
+		}
+		return host
+	}
+	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
+		return net.JoinHostPort(strings.Trim(host, "[]"), port)
+	}
+	if net.ParseIP(host) != nil && strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func appendHTTPTarget(url string, parts map[string]string) string {
+	path, hasPath := parts[string(conventions.URLPathKey)]
+	query, hasQuery := parts[string(conventions.URLQueryKey)]
+	if target, ok := parts["http.target"]; ok &&
+		(!metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() || (!hasPath && !hasQuery)) {
+		return url + target
+	}
+	if hasPath {
+		url += path
 	} else {
-		path, ok := urlParts[string(conventions.URLPathKey)]
-		if ok {
-			url += path
-		} else {
-			url += "/"
+		url += "/"
+	}
+	if hasQuery && query != "" {
+		if !strings.HasPrefix(query, "?") {
+			query = "?" + query
 		}
-		query, ok := urlParts[string(conventions.URLQueryKey)]
-		if ok {
-			if !strings.HasPrefix(query, "?") {
-				query = "?" + query
-			}
-			url += query
-		}
+		url += query
 	}
 	return url
 }

@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: exporter/awsxray
+note: Fix HTTP and database semantic convention migration and add opt-in support for release candidate RPC conventions.
+issues: [22095, 46533]
+subtext: |
+  The new `exporter.awsxray.EmitV1RPCConventions` gate supports `rpc.system.name` and fully-qualified `rpc.method`.

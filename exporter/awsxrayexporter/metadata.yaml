@@ -30,21 +30,30 @@ feature_gates:
     stage: alpha
     description: >-
       When enabled, the AWS X-Ray exporter reads database span attributes
-      using semconv v1.38.0 keys (db.namespace, db.system.name,
-      db.query.text, user.name) instead of the deprecated v1.12.0 keys
-      (db.name, db.system, db.statement, db.user).
+      using semconv v1.43.0 keys (db.namespace, db.system.name,
+      db.query.text), preferring them over legacy keys. Legacy database
+      users are still read; db.user has no stable replacement.
     from_version: v0.147.0
     reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533
   - id: exporter.awsxray.EmitV1HTTPNetworkConventions
     stage: alpha
     description: >-
       When enabled, the AWS X-Ray exporter reads HTTP and network span
-      attributes using semconv v1.38.0 keys (e.g. http.request.method,
+      attributes using semconv v1.43.0 keys (e.g. http.request.method,
       server.address, server.port, client.address,
       messaging.message.body.size) instead
-      of the deprecated v1.12.0 keys.
+      of the deprecated v1.12.0 keys when both are present.
     from_version: v0.163.0
     reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533
+  - id: exporter.awsxray.EmitV1RPCConventions
+    stage: alpha
+    description: >-
+      When enabled, the AWS X-Ray exporter reads the semconv v1.43.0
+      release candidate RPC conventions, using rpc.system.name and
+      extracting service names from fully-qualified rpc.method values.
+      Legacy RPC attributes remain supported.
+    from_version: v0.165.0
+    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
   - id: exporter.awsxray.skiptimestampvalidation
     description: "Remove XRay's timestamp validation on first 32 bits of trace ID"
     stage: beta

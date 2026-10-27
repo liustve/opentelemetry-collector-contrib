@@ -5,6 +5,8 @@ package translator // import "github.com/open-telemetry/opentelemetry-collector-
 
 import (
 	"cmp"
+	"net"
+	"strconv"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -49,12 +51,6 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 		case string(conventions.DBQueryTextKey):
 			if metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
 				dbStatement = value.Str()
-			} else {
-				filtered[key] = value
-			}
-		case string(conventions.UserNameKey):
-			if metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
-				dbUser = value.Str()
 			} else {
 				filtered[key] = value
 			}
@@ -110,11 +106,29 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	// current span name instead
 	dbURL = span.Name()
 
-	// Let's keep the original format for connection_string
-	if dbConnectionString == "" {
+	// Stable DB conventions removed the connection string. Use the recorded
+	// endpoint rather than inventing localhost; retain the legacy format when
+	// an actual legacy connection string is available.
+	_, hasStableSystem := span.Attributes().Get(string(conventions.DBSystemNameKey))
+	_, hasStableNamespace := span.Attributes().Get(string(conventions.DBNamespaceKey))
+	stableDB := metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() && (hasStableSystem || hasStableNamespace)
+	if dbConnectionString == "" && stableDB {
+		if host, ok := span.Attributes().Get(string(conventions.ServerAddressKey)); ok {
+			dbConnectionString = host.Str()
+			if port, ok := span.Attributes().Get(string(conventions.ServerPortKey)); ok && dbConnectionString != "" {
+				portStr := port.Str()
+				if portStr == "" {
+					portStr = strconv.FormatInt(port.Int(), 10)
+				}
+				dbConnectionString = net.JoinHostPort(dbConnectionString, portStr)
+			}
+		}
+	} else if dbConnectionString == "" {
 		dbConnectionString = "localhost"
 	}
-	dbConnectionString = dbConnectionString + "/" + dbInstance
+	if dbConnectionString != "" {
+		dbConnectionString += "/" + dbInstance
+	}
 
 	sqlData = awsxray.SQLData{
 		URL:              awsxray.String(dbURL),

@@ -2164,3 +2164,102 @@ func newTraceID() pcommon.TraceID {
 	}
 	return r
 }
+
+func TestMakeSegmentDBNameFallsBackToLegacyConnectionHost(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
+	for _, attributes := range []map[string]any{
+		{"db.namespace": "orders", "db.connection_string": "jdbc:postgresql://db.example.com:5432"},
+		{"db.namespace": "", "db.name": "orders", "db.connection_string": "jdbc:postgresql://db.example.com:5432"},
+	} {
+		span := constructHTTPClientSpan(attributes)
+		segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
+		require.NoError(t, err)
+		assert.Equal(t, "orders@db.example.com", *segment.Name)
+	}
+}
+
+func TestMakeSegmentMixedRPCConventionsRespectFeatureGate(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "new"}[enabled], func(t *testing.T) {
+			if enabled {
+				enableGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
+			}
+			for _, reverse := range []bool{false, true} {
+				span := constructHTTPClientSpan(nil)
+				putOrderedAttributes(span.Attributes(), map[string]any{
+					"rpc.system":               "aws-api",
+					"rpc.service":              "LegacyService",
+					"rpc.system.name":          "grpc",
+					"rpc.method":               "com.example.Inventory/GetItem",
+					"rpc.grpc.status_code":     int64(0),
+					"rpc.response.status_code": "OK",
+					"server.address":           "rpc.example.com",
+					"server.port":              int64(50051),
+				}, reverse)
+				segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
+				require.NoError(t, err)
+				if enabled {
+					assert.Equal(t, "com.example.Inventory", *segment.Name)
+					assert.Equal(t, "remote", *segment.Namespace)
+				} else {
+					assert.Equal(t, "LegacyService", *segment.Name)
+					assert.Equal(t, "aws", *segment.Namespace)
+				}
+				assert.Equal(t, "OK", segment.Metadata["default"]["rpc.response.status_code"])
+				assert.Equal(t, "rpc.example.com", segment.Metadata["default"]["server.address"])
+				assert.Equal(t, int64(50051), segment.Metadata["default"]["server.port"])
+			}
+		})
+	}
+}
+
+func TestMakeSegmentNewAndLegacyRPCServiceNames(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
+	for _, attributes := range []map[string]any{
+		{"rpc.system.name": "grpc", "rpc.method": "com.example.Inventory/GetItem"},
+		{"rpc.system": "grpc", "rpc.service": "com.example.Inventory", "rpc.method": "GetItem"},
+	} {
+		span := constructHTTPClientSpan(attributes)
+		segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
+		require.NoError(t, err)
+		assert.Equal(t, "com.example.Inventory", *segment.Name)
+		assert.Equal(t, "remote", *segment.Namespace)
+	}
+}
+
+func TestMakeSegmentAWSRPCMethodProvidesOperation(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
+	for _, explicitOperation := range []bool{false, true} {
+		span := constructHTTPClientSpan(map[string]any{
+			"rpc.system.name": "aws-api",
+			"rpc.method":      "DynamoDB/GetItem",
+		})
+		expectedOperation := "GetItem"
+		if explicitOperation {
+			span.Attributes().PutStr("aws.operation", "PutItem")
+			expectedOperation = "PutItem"
+		}
+		segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
+		require.NoError(t, err)
+		assert.Equal(t, "DynamoDB", *segment.Name)
+		assert.Equal(t, "aws", *segment.Namespace)
+		assert.Equal(t, expectedOperation, *segment.AWS.Operation)
+	}
+}
+
+func TestMakeSegmentRPCFaultUsesSpanStatus(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
+	for _, attributes := range []map[string]any{
+		{"rpc.system": "grpc", "rpc.grpc.status_code": int64(14)},
+		{"rpc.system.name": "grpc", "rpc.response.status_code": "UNAVAILABLE"},
+	} {
+		span := constructHTTPClientSpan(attributes)
+		span.Status().SetCode(ptrace.StatusCodeError)
+		segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
+		require.NoError(t, err)
+		assert.True(t, *segment.Fault)
+		if value, ok := attributes["rpc.response.status_code"]; ok {
+			assert.Equal(t, value, segment.Metadata["default"]["rpc.response.status_code"])
+		}
+	}
+}

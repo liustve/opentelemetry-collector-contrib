@@ -25,7 +25,7 @@ var ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate = featuregate.Glo
 var ExporterAwsxrayEmitV1DBConventionsFeatureGate = featuregate.GlobalRegistry().MustRegister(
 	"exporter.awsxray.EmitV1DBConventions",
 	featuregate.StageAlpha,
-	featuregate.WithRegisterDescription("When enabled, the AWS X-Ray exporter reads database span attributes using semconv v1.38.0 keys (db.namespace, db.system.name, db.query.text, user.name) instead of the deprecated v1.12.0 keys (db.name, db.system, db.statement, db.user)."),
+	featuregate.WithRegisterDescription("When enabled, the AWS X-Ray exporter reads database span attributes using semconv v1.43.0 keys (db.namespace, db.system.name, db.query.text), preferring them over legacy keys. Legacy database users are still read; db.user has no stable replacement."),
 	featuregate.WithRegisterReferenceURL("https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533"),
 	featuregate.WithRegisterFromVersion("v0.147.0"),
 )
@@ -33,9 +33,17 @@ var ExporterAwsxrayEmitV1DBConventionsFeatureGate = featuregate.GlobalRegistry()
 var ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate = featuregate.GlobalRegistry().MustRegister(
 	"exporter.awsxray.EmitV1HTTPNetworkConventions",
 	featuregate.StageAlpha,
-	featuregate.WithRegisterDescription("When enabled, the AWS X-Ray exporter reads HTTP and network span attributes using semconv v1.38.0 keys (e.g. http.request.method, server.address, server.port, client.address, messaging.message.body.size) instead of the deprecated v1.12.0 keys."),
+	featuregate.WithRegisterDescription("When enabled, the AWS X-Ray exporter reads HTTP and network span attributes using semconv v1.43.0 keys (e.g. http.request.method, server.address, server.port, client.address, messaging.message.body.size) instead of the deprecated v1.12.0 keys when both are present."),
 	featuregate.WithRegisterReferenceURL("https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533"),
 	featuregate.WithRegisterFromVersion("v0.163.0"),
+)
+
+var ExporterAwsxrayEmitV1RPCConventionsFeatureGate = featuregate.GlobalRegistry().MustRegister(
+	"exporter.awsxray.EmitV1RPCConventions",
+	featuregate.StageAlpha,
+	featuregate.WithRegisterDescription("When enabled, the AWS X-Ray exporter reads the semconv v1.43.0 release candidate RPC conventions, using rpc.system.name and extracting service names from fully-qualified rpc.method values. Legacy RPC attributes remain supported."),
+	featuregate.WithRegisterReferenceURL("https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095"),
+	featuregate.WithRegisterFromVersion("v0.165.0"),
 )
 
 var ExporterAwsxraySkiptimestampvalidationFeatureGate = featuregate.GlobalRegistry().MustRegister(

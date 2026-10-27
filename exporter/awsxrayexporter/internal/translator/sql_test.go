@@ -43,9 +43,9 @@ func TestClientSpanWithNewAndLegacyDBAttributesPrefersNew(t *testing.T) {
 		_, sqlData := makeSQL(span, attributes)
 		require.NotNil(t, sqlData)
 		assert.Equal(t, "postgresql", *sqlData.DatabaseType)
-		assert.Equal(t, "localhost/orders", *sqlData.ConnectionString)
+		assert.Nil(t, sqlData.ConnectionString)
 		assert.Equal(t, "SELECT 1", *sqlData.SanitizedQuery)
-		assert.Equal(t, "new_user", *sqlData.User)
+		assert.Equal(t, "legacy_user", *sqlData.User)
 	}
 }
 
@@ -147,4 +147,93 @@ func constructSQLSpan(attributes map[string]pcommon.Value) ptrace.Span {
 
 	spanAttributes.CopyTo(span.Attributes())
 	return span
+}
+
+func TestMakeSQLStableEndpointAndNoUserNameMapping(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
+	for _, host := range []string{"db.example.com", "2001:db8::1"} {
+		span := constructHTTPClientSpan(map[string]any{
+			"db.system.name": "postgresql",
+			"db.namespace":   "orders",
+			"db.query.text":  "SELECT $1",
+			"server.address": host,
+			"server.port":    int64(5432),
+			"user.name":      "application-user",
+		})
+		attributes, _ := makeHTTP(span)
+		filtered, sqlData := makeSQL(span, attributes)
+		require.NotNil(t, sqlData)
+		if host == "db.example.com" {
+			assert.Equal(t, "db.example.com:5432/orders", *sqlData.ConnectionString)
+		} else {
+			assert.Equal(t, "[2001:db8::1]:5432/orders", *sqlData.ConnectionString)
+		}
+		assert.Nil(t, sqlData.User)
+		require.Contains(t, filtered, "user.name")
+		require.Contains(t, filtered, "server.address")
+		assert.Equal(t, "application-user", filtered["user.name"].Str())
+		assert.Equal(t, host, filtered["server.address"].Str())
+	}
+}
+
+func TestMakeSQLStableDBWithoutEndpointOmitsConnectionString(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
+	span := constructHTTPClientSpan(map[string]any{
+		"db.system.name": "postgresql",
+		"db.namespace":   "orders",
+	})
+	attributes, _ := makeHTTP(span)
+	_, sqlData := makeSQL(span, attributes)
+	require.NotNil(t, sqlData)
+	assert.Nil(t, sqlData.ConnectionString)
+}
+
+func TestMakeSQLMixedConventionsRespectFeatureGates(t *testing.T) {
+	for _, mode := range []string{"default", "dual", "stable"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode != "default" {
+				enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
+			}
+			if mode == "stable" {
+				enableGate(t, metadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate)
+			}
+			span := constructHTTPClientSpan(map[string]any{
+				"db.system":            "mysql",
+				"db.name":              "legacy-db",
+				"db.statement":         "SELECT 2",
+				"db.connection_string": "mysql://legacy.example.com:3306",
+				"db.user":              "db-user",
+				"db.system.name":       "postgresql",
+				"db.namespace":         "orders",
+				"db.query.text":        "SELECT $1",
+				"db.query.summary":     "SELECT orders",
+				"server.address":       "db.example.com",
+				"server.port":          int64(5432),
+				"user.name":            "application-user",
+			})
+			attributes, _ := makeHTTP(span)
+			filtered, sqlData := makeSQL(span, attributes)
+			require.NotNil(t, sqlData)
+			require.Contains(t, filtered, "db.query.summary")
+			require.Contains(t, filtered, "user.name")
+			if mode == "default" {
+				assert.Equal(t, "mysql", *sqlData.DatabaseType)
+				assert.Equal(t, "SELECT 2", *sqlData.SanitizedQuery)
+				assert.Equal(t, "mysql://legacy.example.com:3306/legacy-db", *sqlData.ConnectionString)
+			} else {
+				assert.Equal(t, "postgresql", *sqlData.DatabaseType)
+				assert.Equal(t, "SELECT $1", *sqlData.SanitizedQuery)
+				if mode == "dual" {
+					assert.Equal(t, "mysql://legacy.example.com:3306/orders", *sqlData.ConnectionString)
+				} else {
+					assert.Equal(t, "db.example.com:5432/orders", *sqlData.ConnectionString)
+				}
+			}
+			if mode == "stable" {
+				assert.Nil(t, sqlData.User)
+			} else {
+				assert.Equal(t, "db-user", *sqlData.User)
+			}
+		})
+	}
 }

@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-	conventions "go.opentelemetry.io/otel/semconv/v1.38.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.43.0"
 
 	xraymetadata "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/awsxrayexporter/internal/metadata"
 	awsxray "github.com/open-telemetry/opentelemetry-collector-contrib/internal/aws/xray"
@@ -311,7 +311,12 @@ func MakeDocumentFromSegment(segment *awsxray.Segment) (string, error) {
 
 func isAwsSdkSpan(span ptrace.Span) bool {
 	attributes := span.Attributes()
-	if rpcSystem, ok := attributes.Get(string(conventions.RPCSystemKey)); ok {
+	if xraymetadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
+		if rpcSystem, ok := attributes.Get(string(conventions.RPCSystemNameKey)); ok {
+			return rpcSystem.Str() == awsAPIRPCSystem
+		}
+	}
+	if rpcSystem, ok := attributes.Get("rpc.system"); ok {
 		return rpcSystem.Str() == awsAPIRPCSystem
 	}
 	return false
@@ -385,7 +390,7 @@ func MakeSegment(span ptrace.Span, resource pcommon.Resource, indexedAttrs []str
 	// peer.service should always be prioritized for segment names when it set by users and
 	// the new x-ray specific service name attributes are not found
 	if name == "" {
-		if peerService, ok := attributes.Get(string(conventions.PeerServiceKey)); ok {
+		if peerService, ok := attributes.Get("peer.service"); ok {
 			name = peerService.Str()
 		}
 	}
@@ -411,10 +416,16 @@ func MakeSegment(span ptrace.Span, resource pcommon.Resource, indexedAttrs []str
 	if name == "" {
 		// For database queries, the segment name convention is <db name>@<db host>.
 		if xraymetadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
-			if dbInstance, ok := attributes.Get(string(conventions.DBNamespaceKey)); ok {
+			if dbInstance, ok := attributes.Get(string(conventions.DBNamespaceKey)); ok && dbInstance.Str() != "" {
 				name = dbInstance.Str()
 				if host, ok := attributes.Get(string(conventions.ServerAddressKey)); ok && host.Str() != "" {
 					name += "@" + host.Str()
+				} else if !xraymetadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
+					if dbURL, ok := attributes.Get("db.connection_string"); ok {
+						if parsed, _ := url.Parse(strings.TrimPrefix(dbURL.Str(), "jdbc:")); parsed != nil && parsed.Hostname() != "" {
+							name += "@" + parsed.Hostname()
+						}
+					}
 				}
 			}
 		}
@@ -445,7 +456,19 @@ func MakeSegment(span ptrace.Span, resource pcommon.Resource, indexedAttrs []str
 	}
 
 	if name == "" {
-		if rpcservice, ok := attributes.Get(string(conventions.RPCServiceKey)); ok {
+		if xraymetadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
+			if system, ok := attributes.Get(string(conventions.RPCSystemNameKey)); ok && system.Str() != "" {
+				if method, ok := attributes.Get(string(conventions.RPCMethodKey)); ok {
+					if service, _, ok := strings.Cut(method.Str(), "/"); ok && service != "" {
+						name = service
+					}
+				}
+			}
+		}
+	}
+
+	if name == "" {
+		if rpcservice, ok := attributes.Get("rpc.service"); ok {
 			name = rpcservice.Str()
 		}
 	}
