@@ -79,16 +79,13 @@ func TestNewTracesExporterWithClientRPCGateValidation(t *testing.T) {
 		{name: "drop_requires_emit", drop: true, wantError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			for gate, enabled := range map[*featuregate.Gate]bool{
-				metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate:     tt.emit,
-				metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate: tt.drop,
-			} {
-				previous := gate.IsEnabled()
-				require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), enabled))
-				t.Cleanup(func() {
-					require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), previous))
-				})
-			}
+			setFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate, tt.emit)
+			setFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate, tt.drop)
+			t.Cleanup(func() {
+				unsetFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
+				unsetFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate)
+			})
+
 			ctx := t.Context()
 			exp, err := newTracesExporterWithClient(ctx, generateConfig(t), exportertest.NewNopSettings(metadata.Type),
 				telemetrytest.NewNopRegistry(), aws.Config{}, &mockXRayClient{})
@@ -181,6 +178,16 @@ func BenchmarkForTracesExporter(b *testing.B) {
 		err := traceExporter.ConsumeTraces(ctx, td)
 		assert.Error(b, err)
 	}
+}
+
+func setFeatureGate(t *testing.T, gate *featuregate.Gate, enabled bool) {
+	t.Helper()
+	require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), enabled))
+}
+
+func unsetFeatureGate(t *testing.T, gate *featuregate.Gate) {
+	t.Helper()
+	setFeatureGate(t, gate, false)
 }
 
 func initializeTracesExporter(tb testing.TB, exporterConfig *Config, registry telemetry.Registry) exporter.Traces {
