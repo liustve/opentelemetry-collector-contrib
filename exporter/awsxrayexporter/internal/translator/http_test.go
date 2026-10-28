@@ -618,25 +618,32 @@ func constructHTTPServerSpan(attributes map[string]any) ptrace.Span {
 }
 
 func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
-	for _, mode := range []string{"dual", "stable"} {
-		t.Run(mode, func(t *testing.T) {
-			enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-			if mode == "stable" {
+	for testCaseName, mode := range map[string]struct {
+		EmitV1HTTPNetworkConventions     bool
+		DontEmitV0HTTPNetworkConventions bool
+	}{
+		"dual":   {EmitV1HTTPNetworkConventions: true, DontEmitV0HTTPNetworkConventions: false},
+		"stable": {EmitV1HTTPNetworkConventions: true, DontEmitV0HTTPNetworkConventions: true},
+	} {
+		t.Run(testCaseName, func(t *testing.T) {
+			if mode.EmitV1HTTPNetworkConventions {
+				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
+			}
+			if mode.DontEmitV0HTTPNetworkConventions {
 				enableGate(t, metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate)
 			}
-			for _, tt := range []struct {
-				name    string
-				kind    ptrace.SpanKind
-				reverse bool
+			for testCaseName, tt := range map[string]struct {
+				spanKind ptrace.SpanKind
+				reverse  bool
 			}{
-				{name: "client", kind: ptrace.SpanKindClient},
-				{name: "client_reverse", kind: ptrace.SpanKindClient, reverse: true},
-				{name: "server", kind: ptrace.SpanKindServer},
-				{name: "server_reverse", kind: ptrace.SpanKindServer, reverse: true},
+				"client":         {spanKind: ptrace.SpanKindClient},
+				"client_reverse": {spanKind: ptrace.SpanKindClient, reverse: true},
+				"server":         {spanKind: ptrace.SpanKindServer},
+				"server_reverse": {spanKind: ptrace.SpanKindServer, reverse: true},
 			} {
-				t.Run(tt.name, func(t *testing.T) {
+				t.Run(testCaseName, func(t *testing.T) {
 					span := constructHTTPClientSpan(nil)
-					span.SetKind(tt.kind)
+					span.SetKind(tt.spanKind)
 					putOrderedAttributes(span.Attributes(), map[string]any{
 						"http.method": "POST", "http.request.method": "GET",
 						"http.status_code": int64(429), "http.response.status_code": int64(503),
@@ -644,13 +651,13 @@ func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
 						"http.url": "http://old.example.com/old", "url.full": "https://new.example.com/new",
 						"http.client_ip": "192.0.2.1", "client.address": "192.0.2.2",
 					}, tt.reverse)
-					_, data := makeHTTP(span)
-					require.NotNil(t, data)
-					assert.Equal(t, "GET", *data.Request.Method)
-					assert.Equal(t, int64(503), *data.Response.Status)
-					assert.Equal(t, "new-agent", *data.Request.UserAgent)
-					assert.Equal(t, "https://new.example.com/new", *data.Request.URL)
-					assert.Equal(t, "192.0.2.2", *data.Request.ClientIP)
+					_, segmentHTTP := makeHTTP(span)
+					require.NotNil(t, segmentHTTP)
+					assert.Equal(t, "GET", *segmentHTTP.Request.Method)
+					assert.Equal(t, int64(503), *segmentHTTP.Response.Status)
+					assert.Equal(t, "new-agent", *segmentHTTP.Request.UserAgent)
+					assert.Equal(t, "https://new.example.com/new", *segmentHTTP.Request.URL)
+					assert.Equal(t, "192.0.2.2", *segmentHTTP.Request.ClientIP)
 					isError, isFault, isThrottle, _, _ := makeCause(span, nil, pcommon.NewResource())
 					assert.False(t, isError)
 					assert.True(t, isFault)
@@ -663,11 +670,10 @@ func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
 
 func TestMakeHTTPServerURLPrefersStableAttributes(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-	for _, tt := range []struct {
-		name    string
+	for testCaseName, tt := range map[string]struct {
 		reverse bool
-	}{{name: "forward"}, {name: "reverse", reverse: true}} {
-		t.Run(tt.name, func(t *testing.T) {
+	}{"forward": {}, "reverse": {reverse: true}} {
+		t.Run(testCaseName, func(t *testing.T) {
 			span := constructHTTPServerSpan(nil)
 			putOrderedAttributes(span.Attributes(), map[string]any{
 				"http.request.method": "GET", "http.scheme": "http", "url.scheme": "https",
@@ -676,114 +682,167 @@ func TestMakeHTTPServerURLPrefersStableAttributes(t *testing.T) {
 				"server.address": "new.example.com", "server.port": int64(8443),
 				"http.target": "/old?old=1", "url.path": "/new", "url.query": "new=1",
 			}, tt.reverse)
-			_, data := makeHTTP(span)
-			require.NotNil(t, data)
-			assert.Equal(t, "https://new.example.com:8443/new?new=1", *data.Request.URL)
+			_, segmentHTTP := makeHTTP(span)
+			require.NotNil(t, segmentHTTP)
+			assert.Equal(t, "https://new.example.com:8443/new?new=1", *segmentHTTP.Request.URL)
 		})
 	}
 }
 
 func TestMakeHTTPMigrationURLFallbacks(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		kind  ptrace.SpanKind
-		emit  bool
-		attrs map[string]any
-		want  string
+	for testCaseName, tt := range map[string]struct {
+		spanKind                     ptrace.SpanKind
+		EmitV1HTTPNetworkConventions bool
+		spanAttributes               map[string]any
+		expectedSegmentURL           string
 	}{
-		{name: "client_port", emit: true, attrs: map[string]any{"server.address": "api.example.com", "server.port": int64(8443)}, want: "https://api.example.com:8443/p"},
-		{name: "peer_ipv6_default_port", emit: true, attrs: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(443)}, want: "https://[2001:db8::1]/p"},
-		{name: "peer_ipv6_custom_port", emit: true, attrs: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(8443)}, want: "https://[2001:db8::1]:8443/p"},
-		{name: "server_ipv6_no_port", kind: ptrace.SpanKindServer, emit: true, attrs: map[string]any{"server.address": "2001:db8::2"}, want: "https://[2001:db8::2]/p"},
-		{name: "server_ipv6_custom_port", kind: ptrace.SpanKindServer, emit: true, attrs: map[string]any{"server.address": "2001:db8::2", "server.port": int64(8443)}, want: "https://[2001:db8::2]:8443/p"},
-		{name: "query_without_new_path", emit: true, attrs: map[string]any{"server.address": "api.example.com", "http.target": "/api/orders?x=1", "url.query": "x=1"}, want: "https://api.example.com/api/orders?x=1"},
-		{name: "empty_client_host", emit: true, attrs: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, want: "https://old.example.com:8080/p"},
-		{name: "empty_server_host", kind: ptrace.SpanKindServer, emit: true, attrs: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, want: "https://old.example.com:8080/p"},
-		{name: "empty_query", emit: true, attrs: map[string]any{"server.address": "api.example.com", "url.query": ""}, want: "https://api.example.com/p"},
+		"client_port":             {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "api.example.com", "server.port": int64(8443)}, expectedSegmentURL: "https://api.example.com:8443/p"},
+		"peer_ipv6_default_port":  {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(443)}, expectedSegmentURL: "https://[2001:db8::1]/p"},
+		"peer_ipv6_custom_port":   {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(8443)}, expectedSegmentURL: "https://[2001:db8::1]:8443/p"},
+		"server_ipv6_no_port":     {spanKind: ptrace.SpanKindServer, EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "2001:db8::2"}, expectedSegmentURL: "https://[2001:db8::2]/p"},
+		"server_ipv6_custom_port": {spanKind: ptrace.SpanKindServer, EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "2001:db8::2", "server.port": int64(8443)}, expectedSegmentURL: "https://[2001:db8::2]:8443/p"},
+		"query_without_new_path":  {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "api.example.com", "http.target": "/api/orders?x=1", "url.query": "x=1"}, expectedSegmentURL: "https://api.example.com/api/orders?x=1"},
+		"empty_client_host":       {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, expectedSegmentURL: "https://old.example.com:8080/p"},
+		"empty_server_host":       {spanKind: ptrace.SpanKindServer, EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, expectedSegmentURL: "https://old.example.com:8080/p"},
+		"empty_query":             {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "api.example.com", "url.query": ""}, expectedSegmentURL: "https://api.example.com/p"},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.emit {
+		t.Run(testCaseName, func(t *testing.T) {
+			if tt.EmitV1HTTPNetworkConventions {
 				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
 			}
 			span := constructHTTPClientSpan(map[string]any{"http.request.method": "GET", "url.scheme": "https"})
 			span.Attributes().PutStr("url.path", "/p")
-			if tt.name == "query_without_new_path" {
+			if testCaseName == "query_without_new_path" {
 				span.Attributes().Remove("url.path")
 			}
-			for key, value := range tt.attrs {
+			for key, value := range tt.spanAttributes {
 				attribute := span.Attributes().PutEmpty(key)
 				require.NoError(t, attribute.FromRaw(value))
 			}
-			if tt.kind == ptrace.SpanKindServer {
-				span.SetKind(tt.kind)
+			if tt.spanKind == ptrace.SpanKindServer {
+				span.SetKind(tt.spanKind)
 			}
-			_, data := makeHTTP(span)
-			require.NotNil(t, data)
-			require.NotNil(t, data.Request.URL)
-			assert.Equal(t, tt.want, *data.Request.URL)
+			_, segmentHTTP := makeHTTP(span)
+			require.NotNil(t, segmentHTTP)
+			require.NotNil(t, segmentHTTP.Request.URL)
+			assert.Equal(t, tt.expectedSegmentURL, *segmentHTTP.Request.URL)
 		})
 	}
 }
 
 func TestMakeHTTPResponseSizeRespectsMigrationGates(t *testing.T) {
-	for _, tt := range []struct {
-		name         string
-		emit, drop   bool
-		attrs, event map[string]any
-		want         int64
+	for testCaseName, tt := range map[string]struct {
+		EmitV1HTTPNetworkConventions     bool
+		DontEmitV0HTTPNetworkConventions bool
+		spanAttributes                   map[string]any
+		spanEventAttributes              map[string]any
+		expectedSegmentContentLength     int64
 	}{
-		{name: "default_legacy_http_size_unchanged", attrs: map[string]any{"http.response_content_length": int64(123)}},
-		{name: "dual_legacy_http_size", emit: true, attrs: map[string]any{"http.response_content_length": int64(123)}, want: 123},
-		{name: "dual_new_http_size_wins", emit: true, attrs: map[string]any{"http.response_content_length": int64(123), "http.response.body.size": int64(456)}, want: 456},
-		{name: "stable_legacy_http_size_ignored", emit: true, drop: true, attrs: map[string]any{"http.response_content_length": int64(123)}},
-		{name: "default_legacy_message_size", attrs: map[string]any{"message.type": "RECEIVED", "messaging.message_payload_size_bytes": int64(123), "messaging.message.body.size": int64(456)}, want: 123},
-		{name: "dual_new_message_size_wins", emit: true, attrs: map[string]any{"message.type": "RECEIVED", "messaging.message_payload_size_bytes": int64(123), "messaging.message.body.size": int64(456)}, want: 456},
-		{name: "stable_legacy_message_size_ignored", emit: true, drop: true, attrs: map[string]any{"message.type": "RECEIVED", "messaging.message_payload_size_bytes": int64(123)}},
-		{name: "new_size_in_event", emit: true, event: map[string]any{"http.response.body.size": int64(456)}, want: 456},
+		"default ignores legacy HTTP size": {
+			EmitV1HTTPNetworkConventions:     false,
+			DontEmitV0HTTPNetworkConventions: false,
+			spanAttributes:                   map[string]any{"http.response_content_length": int64(123)},
+			expectedSegmentContentLength:     0,
+		},
+		"dual read falls back to legacy HTTP size": {
+			EmitV1HTTPNetworkConventions:     true,
+			DontEmitV0HTTPNetworkConventions: false,
+			spanAttributes:                   map[string]any{"http.response_content_length": int64(123)},
+			expectedSegmentContentLength:     123,
+		},
+		"dual read prefers new HTTP size": {
+			EmitV1HTTPNetworkConventions:     true,
+			DontEmitV0HTTPNetworkConventions: false,
+			spanAttributes: map[string]any{
+				"http.response_content_length": int64(123),
+				"http.response.body.size":      int64(456),
+			},
+			expectedSegmentContentLength: 456,
+		},
+		"legacy disabled ignores legacy HTTP size": {
+			EmitV1HTTPNetworkConventions:     true,
+			DontEmitV0HTTPNetworkConventions: true,
+			spanAttributes:                   map[string]any{"http.response_content_length": int64(123)},
+			expectedSegmentContentLength:     0,
+		},
+		"default prefers legacy message size": {
+			EmitV1HTTPNetworkConventions:     false,
+			DontEmitV0HTTPNetworkConventions: false,
+			spanAttributes: map[string]any{
+				"message.type":                         "RECEIVED",
+				"messaging.message_payload_size_bytes": int64(123),
+				"messaging.message.body.size":          int64(456),
+			},
+			expectedSegmentContentLength: 123,
+		},
+		"dual read prefers new message size": {
+			EmitV1HTTPNetworkConventions:     true,
+			DontEmitV0HTTPNetworkConventions: false,
+			spanAttributes: map[string]any{
+				"message.type":                         "RECEIVED",
+				"messaging.message_payload_size_bytes": int64(123),
+				"messaging.message.body.size":          int64(456),
+			},
+			expectedSegmentContentLength: 456,
+		},
+		"legacy disabled ignores legacy message size": {
+			EmitV1HTTPNetworkConventions:     true,
+			DontEmitV0HTTPNetworkConventions: true,
+			spanAttributes: map[string]any{
+				"message.type":                         "RECEIVED",
+				"messaging.message_payload_size_bytes": int64(123),
+			},
+			expectedSegmentContentLength: 0,
+		},
+		"new HTTP size is read from an event": {
+			EmitV1HTTPNetworkConventions:     true,
+			DontEmitV0HTTPNetworkConventions: false,
+			spanEventAttributes:              map[string]any{"http.response.body.size": int64(456)},
+			expectedSegmentContentLength:     456,
+		},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.emit {
+		t.Run(testCaseName, func(t *testing.T) {
+			if tt.EmitV1HTTPNetworkConventions {
 				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
 			}
-			if tt.drop {
+			if tt.DontEmitV0HTTPNetworkConventions {
 				enableGate(t, metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate)
 			}
-			span := constructHTTPClientSpan(tt.attrs)
+			span := constructHTTPClientSpan(tt.spanAttributes)
 			span.Attributes().PutStr("http.request.method", "GET")
-			if tt.event != nil {
-				require.NoError(t, span.Events().AppendEmpty().Attributes().FromRaw(tt.event))
+			if tt.spanEventAttributes != nil {
+				require.NoError(t, span.Events().AppendEmpty().Attributes().FromRaw(tt.spanEventAttributes))
 			}
-			_, data := makeHTTP(span)
-			require.NotNil(t, data)
-			assert.Equal(t, tt.want, *data.Response.ContentLength.(*int64))
+			_, segmentHTTP := makeHTTP(span)
+			require.NotNil(t, segmentHTTP)
+			assert.Equal(t, tt.expectedSegmentContentLength, *segmentHTTP.Response.ContentLength.(*int64))
 		})
 	}
 }
 
 func TestMakeHTTPClientIPPrecedenceIgnoresInvalidValues(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-	for _, tt := range []struct {
-		name  string
-		attrs map[string]any
-		want  string
+	for testCaseName, tt := range map[string]struct {
+		spanAttributes          map[string]any
+		expectedSegmentClientIP string
 	}{
-		{name: "invalid_legacy_forwarded_ip", attrs: map[string]any{"http.client_ip": "unknown", "client.address": "192.0.2.2"}, want: "192.0.2.2"},
-		{name: "new_peer_wins", attrs: map[string]any{"net.peer.ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, want: "192.0.2.2"},
-		{name: "legacy_forwarded_fallback", attrs: map[string]any{"client.address": "proxy.example.com", "http.client_ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, want: "192.0.2.1"},
-		{name: "non_ip_addresses_are_not_client_ips", attrs: map[string]any{"client.address": "client.example.com", "http.client_ip": "unknown", "network.peer.address": "peer.example.com"}},
+		"invalid_legacy_forwarded_ip":         {spanAttributes: map[string]any{"http.client_ip": "unknown", "client.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.2"},
+		"new_peer_wins":                       {spanAttributes: map[string]any{"net.peer.ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.2"},
+		"legacy_forwarded_fallback":           {spanAttributes: map[string]any{"client.address": "proxy.example.com", "http.client_ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.1"},
+		"non_ip_addresses_are_not_client_ips": {spanAttributes: map[string]any{"client.address": "client.example.com", "http.client_ip": "unknown", "network.peer.address": "peer.example.com"}},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(testCaseName, func(t *testing.T) {
 			for _, reverse := range []bool{false, true} {
 				span := constructHTTPServerSpan(nil)
 				span.Attributes().PutStr("http.request.method", "GET")
-				putOrderedAttributes(span.Attributes(), tt.attrs, reverse)
-				_, data := makeHTTP(span)
-				require.NotNil(t, data)
-				if tt.want == "" {
-					assert.Nil(t, data.Request.ClientIP)
+				putOrderedAttributes(span.Attributes(), tt.spanAttributes, reverse)
+				_, segmentHTTP := makeHTTP(span)
+				require.NotNil(t, segmentHTTP)
+				if tt.expectedSegmentClientIP == "" {
+					assert.Nil(t, segmentHTTP.Request.ClientIP)
 				} else {
-					require.NotNil(t, data.Request.ClientIP)
-					assert.Equal(t, tt.want, *data.Request.ClientIP)
+					require.NotNil(t, segmentHTTP.Request.ClientIP)
+					assert.Equal(t, tt.expectedSegmentClientIP, *segmentHTTP.Request.ClientIP)
 				}
 			}
 		})
@@ -791,24 +850,34 @@ func TestMakeHTTPClientIPPrecedenceIgnoresInvalidValues(t *testing.T) {
 }
 
 func TestMakeHTTPNonHTTPAttributesRequireMigrationGate(t *testing.T) {
-	for _, mode := range []string{"default", "http", "db", "rpc"} {
-		t.Run(mode, func(t *testing.T) {
-			switch mode {
-			case "http":
+	for testCaseName, mode := range map[string]struct {
+		EmitV1HTTPNetworkConventions bool
+		EmitV1DBConventions          bool
+		EmitV1RPCConventions         bool
+	}{
+		"default": {EmitV1HTTPNetworkConventions: false, EmitV1DBConventions: false, EmitV1RPCConventions: false},
+		"http":    {EmitV1HTTPNetworkConventions: true, EmitV1DBConventions: false, EmitV1RPCConventions: false},
+		"db":      {EmitV1HTTPNetworkConventions: false, EmitV1DBConventions: true, EmitV1RPCConventions: false},
+		"rpc":     {EmitV1HTTPNetworkConventions: false, EmitV1DBConventions: false, EmitV1RPCConventions: true},
+	} {
+		t.Run(testCaseName, func(t *testing.T) {
+			if mode.EmitV1HTTPNetworkConventions {
 				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-			case "db":
+			}
+			if mode.EmitV1DBConventions {
 				enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
-			case "rpc":
+			}
+			if mode.EmitV1RPCConventions {
 				enableGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
 			}
 			span := constructHTTPClientSpan(map[string]any{"db.system": "postgresql", "server.address": "db.example.com", "server.port": int64(5432), "net.peer.ip": "192.0.2.1"})
-			filtered, data := makeHTTP(span)
-			require.Nil(t, data)
+			remainingSpanAttributes, segmentHTTP := makeHTTP(span)
+			require.Nil(t, segmentHTTP)
 			for _, key := range []string{"server.address", "server.port", "net.peer.ip"} {
-				if mode == "default" {
-					assert.NotContains(t, filtered, key)
+				if testCaseName == "default" {
+					assert.NotContains(t, remainingSpanAttributes, key)
 				} else {
-					assert.Contains(t, filtered, key)
+					assert.Contains(t, remainingSpanAttributes, key)
 				}
 			}
 		})
@@ -816,31 +885,30 @@ func TestMakeHTTPNonHTTPAttributesRequireMigrationGate(t *testing.T) {
 }
 
 func TestMakeHTTPDefaultOutputUnchanged(t *testing.T) {
-	for _, tt := range []struct {
-		name    string
-		attrs   map[string]any
-		wantURL string
+	for testCaseName, tt := range map[string]struct {
+		spanAttributes     map[string]any
+		expectedSegmentURL string
 	}{
-		{name: "client_port_ignored", attrs: map[string]any{"server.address": "api.example.com", "server.port": int64(8443), "url.scheme": "https", "url.path": "/p"}, wantURL: "https://api.example.com/p"},
-		{name: "peer_not_used_as_url_host", attrs: map[string]any{"network.peer.address": "2001:db8::1", "url.scheme": "https", "url.path": "/p"}, wantURL: "https:///p"},
-		{name: "empty_query_keeps_question_mark", attrs: map[string]any{"server.address": "api.example.com", "url.scheme": "https", "url.path": "/p", "url.query": ""}, wantURL: "https://api.example.com/p?"},
-		{name: "non_ip_addresses_dropped", attrs: map[string]any{"client.address": "client.example.com", "network.peer.address": "peer.example.com"}},
-		{name: "legacy_http_size_not_read", attrs: map[string]any{"http.response_content_length": int64(123)}},
+		"client_port_ignored":             {spanAttributes: map[string]any{"server.address": "api.example.com", "server.port": int64(8443), "url.scheme": "https", "url.path": "/p"}, expectedSegmentURL: "https://api.example.com/p"},
+		"peer_not_used_as_url_host":       {spanAttributes: map[string]any{"network.peer.address": "2001:db8::1", "url.scheme": "https", "url.path": "/p"}, expectedSegmentURL: "https:///p"},
+		"empty_query_keeps_question_mark": {spanAttributes: map[string]any{"server.address": "api.example.com", "url.scheme": "https", "url.path": "/p", "url.query": ""}, expectedSegmentURL: "https://api.example.com/p?"},
+		"non_ip_addresses_dropped":        {spanAttributes: map[string]any{"client.address": "client.example.com", "network.peer.address": "peer.example.com"}},
+		"legacy_http_size_not_read":       {spanAttributes: map[string]any{"http.response_content_length": int64(123)}},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			span := constructHTTPClientSpan(tt.attrs)
+		t.Run(testCaseName, func(t *testing.T) {
+			span := constructHTTPClientSpan(tt.spanAttributes)
 			span.Attributes().PutStr("http.method", "GET")
-			filtered, data := makeHTTP(span)
-			require.NotNil(t, data)
-			if tt.wantURL == "" {
-				assert.Nil(t, data.Request.URL)
+			remainingSpanAttributes, segmentHTTP := makeHTTP(span)
+			require.NotNil(t, segmentHTTP)
+			if tt.expectedSegmentURL == "" {
+				assert.Nil(t, segmentHTTP.Request.URL)
 			} else {
-				require.NotNil(t, data.Request.URL)
-				assert.Equal(t, tt.wantURL, *data.Request.URL)
+				require.NotNil(t, segmentHTTP.Request.URL)
+				assert.Equal(t, tt.expectedSegmentURL, *segmentHTTP.Request.URL)
 			}
-			assert.Equal(t, int64(0), *data.Response.ContentLength.(*int64))
-			assert.NotContains(t, filtered, "client.address")
-			assert.NotContains(t, filtered, "network.peer.address")
+			assert.Equal(t, int64(0), *segmentHTTP.Response.ContentLength.(*int64))
+			assert.NotContains(t, remainingSpanAttributes, "client.address")
+			assert.NotContains(t, remainingSpanAttributes, "network.peer.address")
 		})
 	}
 	for _, reverse := range []bool{false, true} {
@@ -851,20 +919,20 @@ func TestMakeHTTPDefaultOutputUnchanged(t *testing.T) {
 				"http.user_agent": "legacy-agent", "user_agent.original": "new-agent", "http.url": "http://old.example.com/old", "url.full": "https://new.example.com/new",
 				"http.client_ip": "unknown", "client.address": "192.0.2.2",
 			}, reverse)
-			_, data := makeHTTP(span)
-			require.NotNil(t, data)
+			_, segmentHTTP := makeHTTP(span)
+			require.NotNil(t, segmentHTTP)
 			if reverse {
-				assert.Equal(t, "POST", *data.Request.Method)
-				assert.Equal(t, int64(503), *data.Response.Status)
-				assert.Equal(t, "legacy-agent", *data.Request.UserAgent)
-				assert.Equal(t, "http://old.example.com/old", *data.Request.URL)
-				assert.Equal(t, "192.0.2.2", *data.Request.ClientIP)
+				assert.Equal(t, "POST", *segmentHTTP.Request.Method)
+				assert.Equal(t, int64(503), *segmentHTTP.Response.Status)
+				assert.Equal(t, "legacy-agent", *segmentHTTP.Request.UserAgent)
+				assert.Equal(t, "http://old.example.com/old", *segmentHTTP.Request.URL)
+				assert.Equal(t, "192.0.2.2", *segmentHTTP.Request.ClientIP)
 			} else {
-				assert.Equal(t, "GET", *data.Request.Method)
-				assert.Equal(t, int64(429), *data.Response.Status)
-				assert.Equal(t, "new-agent", *data.Request.UserAgent)
-				assert.Equal(t, "https://new.example.com/new", *data.Request.URL)
-				assert.Equal(t, "unknown", *data.Request.ClientIP)
+				assert.Equal(t, "GET", *segmentHTTP.Request.Method)
+				assert.Equal(t, int64(429), *segmentHTTP.Response.Status)
+				assert.Equal(t, "new-agent", *segmentHTTP.Request.UserAgent)
+				assert.Equal(t, "https://new.example.com/new", *segmentHTTP.Request.URL)
+				assert.Equal(t, "unknown", *segmentHTTP.Request.ClientIP)
 			}
 		})
 	}

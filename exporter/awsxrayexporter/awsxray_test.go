@@ -68,40 +68,35 @@ func TestTraceExport(t *testing.T) {
 }
 
 func TestNewTracesExporterWithClientRPCGateValidation(t *testing.T) {
-	for _, tt := range []struct {
-		name              string
-		enableNewRPC      bool
-		disableLegacyRPC  bool
-		shouldReturnError bool
+	for testCaseName, tt := range map[string]struct {
+		EmitV1RPCConventions     bool
+		DontEmitV0RPCConventions bool
+		shouldReturnError        bool
 	}{
-		{
-			name:              "both gates disabled allows startup",
-			enableNewRPC:      false,
-			disableLegacyRPC:  false,
-			shouldReturnError: false,
+		"both gates disabled allows startup": {
+			EmitV1RPCConventions:     false,
+			DontEmitV0RPCConventions: false,
+			shouldReturnError:        false,
 		},
-		{
-			name:              "new RPC with legacy fallback allows startup",
-			enableNewRPC:      true,
-			disableLegacyRPC:  false,
-			shouldReturnError: false,
+		"new RPC with legacy fallback allows startup": {
+			EmitV1RPCConventions:     true,
+			DontEmitV0RPCConventions: false,
+			shouldReturnError:        false,
 		},
-		{
-			name:              "new RPC with legacy disabled allows startup",
-			enableNewRPC:      true,
-			disableLegacyRPC:  true,
-			shouldReturnError: false,
+		"new RPC with legacy disabled allows startup": {
+			EmitV1RPCConventions:     true,
+			DontEmitV0RPCConventions: true,
+			shouldReturnError:        false,
 		},
-		{
-			name:              "legacy disabled without new RPC rejects startup",
-			enableNewRPC:      false,
-			disableLegacyRPC:  true,
-			shouldReturnError: true,
+		"legacy disabled without new RPC rejects startup": {
+			EmitV1RPCConventions:     false,
+			DontEmitV0RPCConventions: true,
+			shouldReturnError:        true,
 		},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			setFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate, tt.enableNewRPC)
-			setFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate, tt.disableLegacyRPC)
+		t.Run(testCaseName, func(t *testing.T) {
+			setFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate, tt.EmitV1RPCConventions)
+			setFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate, tt.DontEmitV0RPCConventions)
 			t.Cleanup(func() {
 				unsetFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
 				unsetFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate)

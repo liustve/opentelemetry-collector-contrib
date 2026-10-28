@@ -151,46 +151,45 @@ func constructSQLSpan(attributes map[string]pcommon.Value) ptrace.Span {
 
 func TestMakeSQLStableEndpointAndNoUserNameMapping(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
-	for _, tt := range []struct {
-		name                     string
-		host                     string
-		legacyKeys               bool
-		legacyConnection         string
-		wantConnection, wantName string
+	for testCaseName, tt := range map[string]struct {
+		spanServerAddress                                    string
+		useLegacySpanDBAttributes                            bool
+		spanDBConnectionString                               string
+		expectedSegmentConnectionString, expectedSegmentName string
 	}{
-		{name: "new_endpoint", host: "db.example.com", wantConnection: "db.example.com:5432/orders", wantName: "orders@db.example.com"},
-		{name: "ipv6_endpoint", host: "2001:db8::1", wantConnection: "[2001:db8::1]:5432/orders", wantName: "orders@2001:db8::1"},
-		{name: "legacy_db_keys_with_new_endpoint", host: "db.example.com", legacyKeys: true, wantConnection: "db.example.com:5432/orders", wantName: "orders@db.example.com"},
-		{name: "new_endpoint_wins_over_old_connection", host: "db.example.com", legacyConnection: "mysql://legacy.example.com:3306", wantConnection: "db.example.com:5432/orders", wantName: "orders@db.example.com"},
-		{name: "empty_host_falls_back_to_old_connection", legacyConnection: "mysql://legacy.example.com:3306", wantConnection: "mysql://legacy.example.com:3306/orders", wantName: "orders@legacy.example.com"},
+		"new_endpoint":                            {spanServerAddress: "db.example.com", expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
+		"ipv6_endpoint":                           {spanServerAddress: "2001:db8::1", expectedSegmentConnectionString: "[2001:db8::1]:5432/orders", expectedSegmentName: "orders@2001:db8::1"},
+		"legacy_db_keys_with_new_endpoint":        {spanServerAddress: "db.example.com", useLegacySpanDBAttributes: true, expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
+		"new_endpoint_wins_over_old_connection":   {spanServerAddress: "db.example.com", spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
+		"empty_host_falls_back_to_old_connection": {spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "mysql://legacy.example.com:3306/orders", expectedSegmentName: "orders@legacy.example.com"},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			attrs := map[string]any{"db.system.name": "postgresql", "db.namespace": "orders", "db.query.text": "SELECT $1", "server.address": tt.host, "server.port": int64(5432), "user.name": "application-user"}
-			if tt.legacyKeys {
-				delete(attrs, "db.system.name")
-				delete(attrs, "db.namespace")
-				delete(attrs, "db.query.text")
-				attrs["db.system"] = "postgresql"
-				attrs["db.name"] = "orders"
-				attrs["db.statement"] = "SELECT $1"
+		t.Run(testCaseName, func(t *testing.T) {
+			spanAttributes := map[string]any{"db.system.name": "postgresql", "db.namespace": "orders", "db.query.text": "SELECT $1", "server.address": tt.spanServerAddress, "server.port": int64(5432), "user.name": "application-user"}
+			if tt.useLegacySpanDBAttributes {
+				delete(spanAttributes, "db.system.name")
+				delete(spanAttributes, "db.namespace")
+				delete(spanAttributes, "db.query.text")
+				spanAttributes["db.system"] = "postgresql"
+				spanAttributes["db.name"] = "orders"
+				spanAttributes["db.statement"] = "SELECT $1"
 			}
-			if tt.legacyConnection != "" {
-				attrs["db.connection_string"] = tt.legacyConnection
+			if tt.spanDBConnectionString != "" {
+				spanAttributes["db.connection_string"] = tt.spanDBConnectionString
 			}
-			span := constructHTTPClientSpan(attrs)
-			attributes, _ := makeHTTP(span)
-			filtered, data := makeSQL(span, attributes)
-			require.NotNil(t, data)
-			require.NotNil(t, data.ConnectionString)
-			assert.Equal(t, tt.wantConnection, *data.ConnectionString)
-			assert.Nil(t, data.User)
-			require.Contains(t, filtered, "user.name")
-			require.Contains(t, filtered, "server.address")
-			assert.Equal(t, "application-user", filtered["user.name"].Str())
+			span := constructHTTPClientSpan(spanAttributes)
+			remainingSpanAttributesAfterHTTP, _ := makeHTTP(span)
+			remainingSpanAttributesAfterSQL, segmentSQL := makeSQL(span, remainingSpanAttributesAfterHTTP)
+			require.NotNil(t, segmentSQL)
+			require.NotNil(t, segmentSQL.ConnectionString)
+			assert.Equal(t, tt.expectedSegmentConnectionString, *segmentSQL.ConnectionString)
+			assert.Nil(t, segmentSQL.User)
+			require.Contains(t, remainingSpanAttributesAfterSQL, "user.name")
+			require.Contains(t, remainingSpanAttributesAfterSQL, "server.address")
+			assert.Equal(t, "application-user", remainingSpanAttributesAfterSQL["user.name"].Str())
 			segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantName, *segment.Name)
-			assert.Equal(t, tt.wantConnection, *segment.SQL.ConnectionString)
+			assert.Equal(t, tt.expectedSegmentName, *segment.Name)
+			assert.Equal(t, tt.expectedSegmentConnectionString, *segment.SQL.ConnectionString)
 		})
 	}
 }
@@ -201,19 +200,26 @@ func TestMakeSQLStableDBWithoutEndpointOmitsConnectionString(t *testing.T) {
 		"db.system.name": "postgresql",
 		"db.namespace":   "orders",
 	})
-	attributes, _ := makeHTTP(span)
-	_, sqlData := makeSQL(span, attributes)
-	require.NotNil(t, sqlData)
-	assert.Nil(t, sqlData.ConnectionString)
+	remainingSpanAttributes, _ := makeHTTP(span)
+	_, segmentSQL := makeSQL(span, remainingSpanAttributes)
+	require.NotNil(t, segmentSQL)
+	assert.Nil(t, segmentSQL.ConnectionString)
 }
 
 func TestMakeSQLMixedConventionsRespectFeatureGates(t *testing.T) {
-	for _, mode := range []string{"default", "dual", "stable"} {
-		t.Run(mode, func(t *testing.T) {
-			if mode != "default" {
+	for testCaseName, mode := range map[string]struct {
+		EmitV1DBConventions     bool
+		DontEmitV0DBConventions bool
+	}{
+		"default": {EmitV1DBConventions: false, DontEmitV0DBConventions: false},
+		"dual":    {EmitV1DBConventions: true, DontEmitV0DBConventions: false},
+		"stable":  {EmitV1DBConventions: true, DontEmitV0DBConventions: true},
+	} {
+		t.Run(testCaseName, func(t *testing.T) {
+			if mode.EmitV1DBConventions {
 				enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
 			}
-			if mode == "stable" {
+			if mode.DontEmitV0DBConventions {
 				enableGate(t, metadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate)
 			}
 			span := constructHTTPClientSpan(map[string]any{
@@ -230,24 +236,24 @@ func TestMakeSQLMixedConventionsRespectFeatureGates(t *testing.T) {
 				"server.port":          int64(5432),
 				"user.name":            "application-user",
 			})
-			attributes, _ := makeHTTP(span)
-			filtered, sqlData := makeSQL(span, attributes)
-			require.NotNil(t, sqlData)
-			require.Contains(t, filtered, "db.query.summary")
-			require.Contains(t, filtered, "user.name")
-			if mode == "default" {
-				assert.Equal(t, "mysql", *sqlData.DatabaseType)
-				assert.Equal(t, "SELECT 2", *sqlData.SanitizedQuery)
-				assert.Equal(t, "mysql://legacy.example.com:3306/legacy-db", *sqlData.ConnectionString)
+			remainingSpanAttributesAfterHTTP, _ := makeHTTP(span)
+			remainingSpanAttributesAfterSQL, segmentSQL := makeSQL(span, remainingSpanAttributesAfterHTTP)
+			require.NotNil(t, segmentSQL)
+			require.Contains(t, remainingSpanAttributesAfterSQL, "db.query.summary")
+			require.Contains(t, remainingSpanAttributesAfterSQL, "user.name")
+			if !mode.EmitV1DBConventions {
+				assert.Equal(t, "mysql", *segmentSQL.DatabaseType)
+				assert.Equal(t, "SELECT 2", *segmentSQL.SanitizedQuery)
+				assert.Equal(t, "mysql://legacy.example.com:3306/legacy-db", *segmentSQL.ConnectionString)
 			} else {
-				assert.Equal(t, "postgresql", *sqlData.DatabaseType)
-				assert.Equal(t, "SELECT $1", *sqlData.SanitizedQuery)
-				assert.Equal(t, "db.example.com:5432/orders", *sqlData.ConnectionString)
+				assert.Equal(t, "postgresql", *segmentSQL.DatabaseType)
+				assert.Equal(t, "SELECT $1", *segmentSQL.SanitizedQuery)
+				assert.Equal(t, "db.example.com:5432/orders", *segmentSQL.ConnectionString)
 			}
-			if mode == "stable" {
-				assert.Nil(t, sqlData.User)
+			if mode.DontEmitV0DBConventions {
+				assert.Nil(t, segmentSQL.User)
 			} else {
-				assert.Equal(t, "db-user", *sqlData.User)
+				assert.Equal(t, "db-user", *segmentSQL.User)
 			}
 		})
 	}
