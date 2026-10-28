@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	conventions "go.opentelemetry.io/otel/semconv/v1.43.0"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/awsxrayexporter/internal/metadata"
 	awsxray "github.com/open-telemetry/opentelemetry-collector-contrib/internal/aws/xray"
 )
 
@@ -153,7 +154,13 @@ func makeCause(span ptrace.Span, attributes map[string]pcommon.Value, resource p
 		}
 	}
 
-	val, ok := httpAttribute(span.Attributes().Get, string(conventions.HTTPResponseStatusCodeKey), "http.status_code")
+	val, ok := span.Attributes().Get(string(conventions.HTTPResponseStatusCodeKey))
+	if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if legacy, exists := span.Attributes().Get("http.status_code"); exists &&
+			(!metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() || !ok) {
+			val, ok = legacy, true
+		}
+	}
 
 	// The segment status for http spans will be based on their http.statuscode as we found some http
 	// spans does not fill with status.Code() but always filled with http.statuscode

@@ -45,6 +45,11 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
+			if emitV1 && key == "http.method" {
+				if _, ok := span.Attributes().Get(string(conventions.HTTPRequestMethodKey)); ok {
+					break
+				}
+			}
 			info.Request.Method = awsxray.String(value.Str())
 			hasHTTP = true
 		case string("http.client_ip"):
@@ -61,6 +66,11 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
+			if emitV1 && key == "http.user_agent" {
+				if _, ok := span.Attributes().Get(string(conventions.UserAgentOriginalKey)); ok {
+					break
+				}
+			}
 			info.Request.UserAgent = awsxray.String(value.Str())
 			hasHTTP = true
 		case string("http.status_code"), string(conventions.HTTPResponseStatusCodeKey):
@@ -68,6 +78,11 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 			if key == string("http.status_code") && metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
 				filtered[key] = value
 				break
+			}
+			if emitV1 && key == "http.status_code" {
+				if _, ok := span.Attributes().Get(string(conventions.HTTPResponseStatusCodeKey)); ok {
+					break
+				}
 			}
 			info.Response.Status = aws.Int64(value.Int())
 			hasHTTP = true
@@ -226,15 +241,6 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 	if emitV1 {
 		// Resolve after iteration so dual-read precedence does not depend on
 		// attribute order. Leave the original translation unchanged by default.
-		if value, ok := httpAttribute(span.Attributes().Get, string(conventions.HTTPRequestMethodKey), "http.method"); ok {
-			info.Request.Method = awsxray.String(value.Str())
-		}
-		if value, ok := httpAttribute(span.Attributes().Get, string(conventions.UserAgentOriginalKey), "http.user_agent"); ok {
-			info.Request.UserAgent = awsxray.String(value.Str())
-		}
-		if value, ok := httpAttribute(span.Attributes().Get, string(conventions.HTTPResponseStatusCodeKey), "http.status_code"); ok {
-			info.Response.Status = aws.Int64(value.Int())
-		}
 		info.Request.ClientIP = nil
 		for _, key := range []string{string(conventions.ClientAddressKey), "http.client_ip", string(conventions.NetworkPeerAddressKey), "net.peer.ip"} {
 			if (key == "http.client_ip" || key == "net.peer.ip") && metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
@@ -430,10 +436,18 @@ func constructHTTPHostPort(host, port, scheme string) string {
 }
 
 func httpURLPart(parts map[string]string, stableKey, legacyKey string) (string, bool) {
-	return httpAttribute(func(key string) (string, bool) {
-		value, ok := parts[key]
-		return value, ok
-	}, stableKey, legacyKey)
+	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if value, ok := parts[stableKey]; ok {
+			return value, true
+		}
+	}
+	if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if value, ok := parts[legacyKey]; ok {
+			return value, true
+		}
+	}
+	value, ok := parts[stableKey]
+	return value, ok
 }
 
 func appendHTTPTarget(url string, parts map[string]string) string {
