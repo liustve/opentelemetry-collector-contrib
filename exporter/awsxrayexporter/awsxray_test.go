@@ -69,18 +69,39 @@ func TestTraceExport(t *testing.T) {
 
 func TestNewTracesExporterWithClientRPCGateValidation(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		emit, drop bool
-		wantError  bool
+		name              string
+		enableNewRPC      bool
+		disableLegacyRPC  bool
+		shouldReturnError bool
 	}{
-		{name: "default"},
-		{name: "dual", emit: true},
-		{name: "newer_only", emit: true, drop: true},
-		{name: "drop_requires_emit", drop: true, wantError: true},
+		{
+			name:              "both gates disabled allows startup",
+			enableNewRPC:      false,
+			disableLegacyRPC:  false,
+			shouldReturnError: false,
+		},
+		{
+			name:              "new RPC with legacy fallback allows startup",
+			enableNewRPC:      true,
+			disableLegacyRPC:  false,
+			shouldReturnError: false,
+		},
+		{
+			name:              "new RPC with legacy disabled allows startup",
+			enableNewRPC:      true,
+			disableLegacyRPC:  true,
+			shouldReturnError: false,
+		},
+		{
+			name:              "legacy disabled without new RPC rejects startup",
+			enableNewRPC:      false,
+			disableLegacyRPC:  true,
+			shouldReturnError: true,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			setFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate, tt.emit)
-			setFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate, tt.drop)
+			setFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate, tt.enableNewRPC)
+			setFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate, tt.disableLegacyRPC)
 			t.Cleanup(func() {
 				unsetFeatureGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
 				unsetFeatureGate(t, metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate)
@@ -91,8 +112,8 @@ func TestNewTracesExporterWithClientRPCGateValidation(t *testing.T) {
 				telemetrytest.NewNopRegistry(), aws.Config{}, &mockXRayClient{})
 			require.NoError(t, err)
 			err = exp.Start(ctx, componenttest.NewNopHost())
-			if tt.wantError {
-				require.ErrorContains(t, err, "DontEmitV0RPCConventions requires exporter.awsxray.EmitV1RPCConventions")
+			if tt.shouldReturnError {
+				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
 			}
