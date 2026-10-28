@@ -153,7 +153,7 @@ func makeCause(span ptrace.Span, attributes map[string]pcommon.Value, resource p
 		}
 	}
 
-	val, ok := httpAttribute(span.Attributes(), string(conventions.HTTPResponseStatusCodeKey), "http.status_code")
+	val, ok := httpAttribute(span.Attributes().Get, string(conventions.HTTPResponseStatusCodeKey), "http.status_code")
 
 	// The segment status for http spans will be based on their http.statuscode as we found some http
 	// spans does not fill with status.Code() but always filled with http.statuscode

@@ -1,6 +1,9 @@
-change_type: bug_fix
+change_type: enhancement
 component: exporter/awsxray
-note: Fix HTTP and database semantic convention migration and add opt-in support for release candidate RPC conventions.
-issues: [22095, 46533]
+note: Fix opt-in HTTP and database semantic convention translation and add paired gates for RPC migration while preserving default output.
+issues: [22095, 46537]
 subtext: |
-  The new `exporter.awsxray.EmitV1RPCConventions` gate supports `rpc.system.name` and fully-qualified `rpc.method`.
+  Use `exporter.awsxray.EmitV1RPCConventions` for dual-read and enable
+  `exporter.awsxray.DontEmitV0RPCConventions` to stop reading legacy generic RPC names.
+  AWS SDK conventions remain supported. With database migration enabled, `user.name`
+  no longer populates the SQL user; `db.user` remains the legacy source.

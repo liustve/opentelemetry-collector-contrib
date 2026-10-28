@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exportertest"
+	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
@@ -64,6 +65,43 @@ func TestTraceExport(t *testing.T) {
 	assert.Error(t, err)
 	err = traceExporter.Shutdown(ctx)
 	assert.NoError(t, err)
+}
+
+func TestNewTracesExporterWithClientRPCGateValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		emit, drop bool
+		wantError  bool
+	}{
+		{name: "default"},
+		{name: "dual", emit: true},
+		{name: "newer_only", emit: true, drop: true},
+		{name: "drop_requires_emit", drop: true, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for gate, enabled := range map[*featuregate.Gate]bool{
+				metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate:     tt.emit,
+				metadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate: tt.drop,
+			} {
+				previous := gate.IsEnabled()
+				require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), enabled))
+				t.Cleanup(func() {
+					require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), previous))
+				})
+			}
+			ctx := t.Context()
+			exp, err := newTracesExporterWithClient(ctx, generateConfig(t), exportertest.NewNopSettings(metadata.Type),
+				telemetrytest.NewNopRegistry(), aws.Config{}, &mockXRayClient{})
+			require.NoError(t, err)
+			err = exp.Start(ctx, componenttest.NewNopHost())
+			if tt.wantError {
+				require.ErrorContains(t, err, "DontEmitV0RPCConventions requires exporter.awsxray.EmitV1RPCConventions")
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, exp.Shutdown(ctx))
+		})
+	}
 }
 
 func TestXraySpanTraceResourceExtraction(t *testing.T) {

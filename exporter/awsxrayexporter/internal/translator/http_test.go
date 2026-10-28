@@ -618,54 +618,44 @@ func constructHTTPServerSpan(attributes map[string]any) ptrace.Span {
 }
 
 func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
-	for _, mode := range []string{"default", "dual", "stable"} {
+	for _, mode := range []string{"dual", "stable"} {
 		t.Run(mode, func(t *testing.T) {
-			if mode != "default" {
-				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-			}
+			enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
 			if mode == "stable" {
 				enableGate(t, metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate)
 			}
-			for _, reverse := range []bool{false, true} {
-				for _, kind := range []ptrace.SpanKind{ptrace.SpanKindClient, ptrace.SpanKindServer} {
+			for _, tt := range []struct {
+				name    string
+				kind    ptrace.SpanKind
+				reverse bool
+			}{
+				{name: "client", kind: ptrace.SpanKindClient},
+				{name: "client_reverse", kind: ptrace.SpanKindClient, reverse: true},
+				{name: "server", kind: ptrace.SpanKindServer},
+				{name: "server_reverse", kind: ptrace.SpanKindServer, reverse: true},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
 					span := constructHTTPClientSpan(nil)
-					span.SetKind(kind)
+					span.SetKind(tt.kind)
 					putOrderedAttributes(span.Attributes(), map[string]any{
-						"http.method":               "POST",
-						"http.request.method":       "GET",
-						"http.status_code":          int64(429),
-						"http.response.status_code": int64(503),
-						"http.user_agent":           "legacy-agent",
-						"user_agent.original":       "new-agent",
-						"http.url":                  "http://old.example.com/old",
-						"url.full":                  "https://new.example.com/new",
-						"http.client_ip":            "192.0.2.1",
-						"client.address":            "192.0.2.2",
-					}, reverse)
-
-					_, httpData := makeHTTP(span)
-					require.NotNil(t, httpData)
+						"http.method": "POST", "http.request.method": "GET",
+						"http.status_code": int64(429), "http.response.status_code": int64(503),
+						"http.user_agent": "legacy-agent", "user_agent.original": "new-agent",
+						"http.url": "http://old.example.com/old", "url.full": "https://new.example.com/new",
+						"http.client_ip": "192.0.2.1", "client.address": "192.0.2.2",
+					}, tt.reverse)
+					_, data := makeHTTP(span)
+					require.NotNil(t, data)
+					assert.Equal(t, "GET", *data.Request.Method)
+					assert.Equal(t, int64(503), *data.Response.Status)
+					assert.Equal(t, "new-agent", *data.Request.UserAgent)
+					assert.Equal(t, "https://new.example.com/new", *data.Request.URL)
+					assert.Equal(t, "192.0.2.2", *data.Request.ClientIP)
 					isError, isFault, isThrottle, _, _ := makeCause(span, nil, pcommon.NewResource())
-					if mode == "default" {
-						assert.Equal(t, "POST", *httpData.Request.Method)
-						assert.Equal(t, int64(429), *httpData.Response.Status)
-						assert.Equal(t, "legacy-agent", *httpData.Request.UserAgent)
-						assert.Equal(t, "http://old.example.com/old", *httpData.Request.URL)
-						assert.Equal(t, "192.0.2.1", *httpData.Request.ClientIP)
-						assert.True(t, isError)
-						assert.False(t, isFault)
-						assert.True(t, isThrottle)
-					} else {
-						assert.Equal(t, "GET", *httpData.Request.Method)
-						assert.Equal(t, int64(503), *httpData.Response.Status)
-						assert.Equal(t, "new-agent", *httpData.Request.UserAgent)
-						assert.Equal(t, "https://new.example.com/new", *httpData.Request.URL)
-						assert.Equal(t, "192.0.2.2", *httpData.Request.ClientIP)
-						assert.False(t, isError)
-						assert.True(t, isFault)
-						assert.False(t, isThrottle)
-					}
-				}
+					assert.False(t, isError)
+					assert.True(t, isFault)
+					assert.False(t, isThrottle)
+				})
 			}
 		})
 	}
@@ -673,105 +663,210 @@ func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
 
 func TestMakeHTTPServerURLPrefersStableAttributes(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-	for _, reverse := range []bool{false, true} {
-		span := constructHTTPServerSpan(nil)
-		putOrderedAttributes(span.Attributes(), map[string]any{
-			"http.request.method": "GET",
-			"http.scheme":         "http",
-			"url.scheme":          "https",
-			"http.host":           "old.example.com:8080",
-			"net.host.name":       "old.example.com",
-			"net.host.port":       int64(8080),
-			"host.name":           "collector.example.com",
-			"server.address":      "new.example.com",
-			"server.port":         int64(8443),
-			"http.target":         "/old?old=1",
-			"url.path":            "/new",
-			"url.query":           "new=1",
-		}, reverse)
-		_, httpData := makeHTTP(span)
-		require.NotNil(t, httpData)
-		assert.Equal(t, "https://new.example.com:8443/new?new=1", *httpData.Request.URL)
+	for _, tt := range []struct {
+		name    string
+		reverse bool
+	}{{name: "forward"}, {name: "reverse", reverse: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			span := constructHTTPServerSpan(nil)
+			putOrderedAttributes(span.Attributes(), map[string]any{
+				"http.request.method": "GET", "http.scheme": "http", "url.scheme": "https",
+				"http.host": "old.example.com:8080", "net.host.name": "old.example.com",
+				"net.host.port": int64(8080), "host.name": "collector.example.com",
+				"server.address": "new.example.com", "server.port": int64(8443),
+				"http.target": "/old?old=1", "url.path": "/new", "url.query": "new=1",
+			}, tt.reverse)
+			_, data := makeHTTP(span)
+			require.NotNil(t, data)
+			assert.Equal(t, "https://new.example.com:8443/new?new=1", *data.Request.URL)
+		})
 	}
 }
 
-func TestMakeHTTPStableResponseBodySize(t *testing.T) {
-	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-	span := constructHTTPClientSpan(map[string]any{
-		"http.request.method":     "GET",
-		"http.response.body.size": 123,
-	})
-	_, httpData := makeHTTP(span)
-	require.NotNil(t, httpData)
-	assert.Equal(t, int64(123), *httpData.Response.ContentLength.(*int64))
-}
-
-func TestMakeHTTPIPv6URLUsesNetworkPeerOrServerAddress(t *testing.T) {
-	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-	for _, kind := range []ptrace.SpanKind{ptrace.SpanKindClient, ptrace.SpanKindServer} {
-		attributes := map[string]any{
-			"http.request.method":  "GET",
-			"url.scheme":           "https",
-			"url.path":             "/orders",
-			"network.peer.address": "2001:db8::1",
-			"network.peer.port":    8443,
-		}
-		if kind == ptrace.SpanKindServer {
-			attributes["server.address"] = "2001:db8::2"
-			attributes["server.port"] = 8443
-		}
-		span := constructHTTPClientSpan(attributes)
-		span.SetKind(kind)
-		_, httpData := makeHTTP(span)
-		require.NotNil(t, httpData)
-		if kind == ptrace.SpanKindClient {
-			assert.Equal(t, "https://[2001:db8::1]:8443/orders", *httpData.Request.URL)
-		} else {
-			assert.Equal(t, "https://[2001:db8::2]:8443/orders", *httpData.Request.URL)
-		}
-	}
-}
-
-func TestMakeHTTPStableClientEndpointWithDefaultGates(t *testing.T) {
-	span := constructHTTPClientSpan(map[string]any{
-		"http.request.method": "GET",
-		"url.scheme":          "https",
-		"url.path":            "/orders",
-		"server.address":      "api.example.com",
-		"server.port":         8443,
-	})
-	_, httpData := makeHTTP(span)
-	require.NotNil(t, httpData)
-	assert.Equal(t, "https://api.example.com:8443/orders", *httpData.Request.URL)
-}
-
-func TestMakeHTTPClientIPPrefersStableNetworkPeer(t *testing.T) {
-	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
-	for _, reverse := range []bool{false, true} {
-		span := constructHTTPServerSpan(nil)
-		putOrderedAttributes(span.Attributes(), map[string]any{
-			"http.request.method":  "GET",
-			"net.peer.ip":          "192.0.2.1",
-			"network.peer.address": "192.0.2.2",
-		}, reverse)
-		_, httpData := makeHTTP(span)
-		require.NotNil(t, httpData)
-		assert.Equal(t, "192.0.2.2", *httpData.Request.ClientIP)
-	}
-}
-
-func TestMakeHTTPNonHTTPAttributesPreserved(t *testing.T) {
-	for _, attributes := range []map[string]any{
-		{"db.system.name": "postgresql", "server.address": "db.example.com", "server.port": int64(5432)},
-		{"rpc.system.name": "grpc", "server.address": "rpc.example.com", "server.port": int64(50051)},
+func TestMakeHTTPMigrationURLFallbacks(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		kind  ptrace.SpanKind
+		emit  bool
+		attrs map[string]any
+		want  string
+	}{
+		{name: "client_port", emit: true, attrs: map[string]any{"server.address": "api.example.com", "server.port": int64(8443)}, want: "https://api.example.com:8443/p"},
+		{name: "peer_ipv6_default_port", emit: true, attrs: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(443)}, want: "https://[2001:db8::1]/p"},
+		{name: "peer_ipv6_custom_port", emit: true, attrs: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(8443)}, want: "https://[2001:db8::1]:8443/p"},
+		{name: "server_ipv6_no_port", kind: ptrace.SpanKindServer, emit: true, attrs: map[string]any{"server.address": "2001:db8::2"}, want: "https://[2001:db8::2]/p"},
+		{name: "server_ipv6_custom_port", kind: ptrace.SpanKindServer, emit: true, attrs: map[string]any{"server.address": "2001:db8::2", "server.port": int64(8443)}, want: "https://[2001:db8::2]:8443/p"},
+		{name: "query_without_new_path", emit: true, attrs: map[string]any{"server.address": "api.example.com", "http.target": "/api/orders?x=1", "url.query": "x=1"}, want: "https://api.example.com/api/orders?x=1"},
+		{name: "empty_client_host", emit: true, attrs: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, want: "https://old.example.com:8080/p"},
+		{name: "empty_server_host", kind: ptrace.SpanKindServer, emit: true, attrs: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, want: "https://old.example.com:8080/p"},
+		{name: "empty_query", emit: true, attrs: map[string]any{"server.address": "api.example.com", "url.query": ""}, want: "https://api.example.com/p"},
 	} {
-		span := constructHTTPClientSpan(attributes)
-		filtered, httpData := makeHTTP(span)
-		require.Nil(t, httpData)
-		for key, value := range span.Attributes().All() {
-			require.Contains(t, filtered, key)
-			assert.Equal(t, value.AsRaw(), filtered[key].AsRaw(), key)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.emit {
+				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
+			}
+			span := constructHTTPClientSpan(map[string]any{"http.request.method": "GET", "url.scheme": "https"})
+			span.Attributes().PutStr("url.path", "/p")
+			if tt.name == "query_without_new_path" {
+				span.Attributes().Remove("url.path")
+			}
+			for key, value := range tt.attrs {
+				attribute := span.Attributes().PutEmpty(key)
+				require.NoError(t, attribute.FromRaw(value))
+			}
+			if tt.kind == ptrace.SpanKindServer {
+				span.SetKind(tt.kind)
+			}
+			_, data := makeHTTP(span)
+			require.NotNil(t, data)
+			require.NotNil(t, data.Request.URL)
+			assert.Equal(t, tt.want, *data.Request.URL)
+		})
+	}
+}
+
+func TestMakeHTTPResponseSizeRespectsMigrationGates(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		emit, drop   bool
+		attrs, event map[string]any
+		want         int64
+	}{
+		{name: "default_legacy_http_size_unchanged", attrs: map[string]any{"http.response_content_length": int64(123)}},
+		{name: "dual_legacy_http_size", emit: true, attrs: map[string]any{"http.response_content_length": int64(123)}, want: 123},
+		{name: "dual_new_http_size_wins", emit: true, attrs: map[string]any{"http.response_content_length": int64(123), "http.response.body.size": int64(456)}, want: 456},
+		{name: "stable_legacy_http_size_ignored", emit: true, drop: true, attrs: map[string]any{"http.response_content_length": int64(123)}},
+		{name: "default_legacy_message_size", attrs: map[string]any{"message.type": "RECEIVED", "messaging.message_payload_size_bytes": int64(123), "messaging.message.body.size": int64(456)}, want: 123},
+		{name: "dual_new_message_size_wins", emit: true, attrs: map[string]any{"message.type": "RECEIVED", "messaging.message_payload_size_bytes": int64(123), "messaging.message.body.size": int64(456)}, want: 456},
+		{name: "stable_legacy_message_size_ignored", emit: true, drop: true, attrs: map[string]any{"message.type": "RECEIVED", "messaging.message_payload_size_bytes": int64(123)}},
+		{name: "new_size_in_event", emit: true, event: map[string]any{"http.response.body.size": int64(456)}, want: 456},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.emit {
+				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
+			}
+			if tt.drop {
+				enableGate(t, metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate)
+			}
+			span := constructHTTPClientSpan(tt.attrs)
+			span.Attributes().PutStr("http.request.method", "GET")
+			if tt.event != nil {
+				require.NoError(t, span.Events().AppendEmpty().Attributes().FromRaw(tt.event))
+			}
+			_, data := makeHTTP(span)
+			require.NotNil(t, data)
+			assert.Equal(t, tt.want, *data.Response.ContentLength.(*int64))
+		})
+	}
+}
+
+func TestMakeHTTPClientIPPrecedenceIgnoresInvalidValues(t *testing.T) {
+	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
+	for _, tt := range []struct {
+		name  string
+		attrs map[string]any
+		want  string
+	}{
+		{name: "invalid_legacy_forwarded_ip", attrs: map[string]any{"http.client_ip": "unknown", "client.address": "192.0.2.2"}, want: "192.0.2.2"},
+		{name: "new_peer_wins", attrs: map[string]any{"net.peer.ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, want: "192.0.2.2"},
+		{name: "legacy_forwarded_fallback", attrs: map[string]any{"client.address": "proxy.example.com", "http.client_ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, want: "192.0.2.1"},
+		{name: "non_ip_addresses_are_not_client_ips", attrs: map[string]any{"client.address": "client.example.com", "http.client_ip": "unknown", "network.peer.address": "peer.example.com"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, reverse := range []bool{false, true} {
+				span := constructHTTPServerSpan(nil)
+				span.Attributes().PutStr("http.request.method", "GET")
+				putOrderedAttributes(span.Attributes(), tt.attrs, reverse)
+				_, data := makeHTTP(span)
+				require.NotNil(t, data)
+				if tt.want == "" {
+					assert.Nil(t, data.Request.ClientIP)
+				} else {
+					require.NotNil(t, data.Request.ClientIP)
+					assert.Equal(t, tt.want, *data.Request.ClientIP)
+				}
+			}
+		})
+	}
+}
+
+func TestMakeHTTPNonHTTPAttributesRequireMigrationGate(t *testing.T) {
+	for _, mode := range []string{"default", "http", "db", "rpc"} {
+		t.Run(mode, func(t *testing.T) {
+			switch mode {
+			case "http":
+				enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
+			case "db":
+				enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
+			case "rpc":
+				enableGate(t, metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate)
+			}
+			span := constructHTTPClientSpan(map[string]any{"db.system": "postgresql", "server.address": "db.example.com", "server.port": int64(5432), "net.peer.ip": "192.0.2.1"})
+			filtered, data := makeHTTP(span)
+			require.Nil(t, data)
+			for _, key := range []string{"server.address", "server.port", "net.peer.ip"} {
+				if mode == "default" {
+					assert.NotContains(t, filtered, key)
+				} else {
+					assert.Contains(t, filtered, key)
+				}
+			}
+		})
+	}
+}
+
+func TestMakeHTTPDefaultOutputUnchanged(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		attrs   map[string]any
+		wantURL string
+	}{
+		{name: "client_port_ignored", attrs: map[string]any{"server.address": "api.example.com", "server.port": int64(8443), "url.scheme": "https", "url.path": "/p"}, wantURL: "https://api.example.com/p"},
+		{name: "peer_not_used_as_url_host", attrs: map[string]any{"network.peer.address": "2001:db8::1", "url.scheme": "https", "url.path": "/p"}, wantURL: "https:///p"},
+		{name: "empty_query_keeps_question_mark", attrs: map[string]any{"server.address": "api.example.com", "url.scheme": "https", "url.path": "/p", "url.query": ""}, wantURL: "https://api.example.com/p?"},
+		{name: "non_ip_addresses_dropped", attrs: map[string]any{"client.address": "client.example.com", "network.peer.address": "peer.example.com"}},
+		{name: "legacy_http_size_not_read", attrs: map[string]any{"http.response_content_length": int64(123)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			span := constructHTTPClientSpan(tt.attrs)
+			span.Attributes().PutStr("http.method", "GET")
+			filtered, data := makeHTTP(span)
+			require.NotNil(t, data)
+			if tt.wantURL == "" {
+				assert.Nil(t, data.Request.URL)
+			} else {
+				require.NotNil(t, data.Request.URL)
+				assert.Equal(t, tt.wantURL, *data.Request.URL)
+			}
+			assert.Equal(t, int64(0), *data.Response.ContentLength.(*int64))
+			assert.NotContains(t, filtered, "client.address")
+			assert.NotContains(t, filtered, "network.peer.address")
+		})
+	}
+	for _, reverse := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original_order", true: "original_reverse_order"}[reverse], func(t *testing.T) {
+			span := constructHTTPClientSpan(nil)
+			putOrderedAttributes(span.Attributes(), map[string]any{
+				"http.method": "POST", "http.request.method": "GET", "http.status_code": int64(429), "http.response.status_code": int64(503),
+				"http.user_agent": "legacy-agent", "user_agent.original": "new-agent", "http.url": "http://old.example.com/old", "url.full": "https://new.example.com/new",
+				"http.client_ip": "unknown", "client.address": "192.0.2.2",
+			}, reverse)
+			_, data := makeHTTP(span)
+			require.NotNil(t, data)
+			if reverse {
+				assert.Equal(t, "POST", *data.Request.Method)
+				assert.Equal(t, int64(503), *data.Response.Status)
+				assert.Equal(t, "legacy-agent", *data.Request.UserAgent)
+				assert.Equal(t, "http://old.example.com/old", *data.Request.URL)
+				assert.Equal(t, "192.0.2.2", *data.Request.ClientIP)
+			} else {
+				assert.Equal(t, "GET", *data.Request.Method)
+				assert.Equal(t, int64(429), *data.Response.Status)
+				assert.Equal(t, "new-agent", *data.Request.UserAgent)
+				assert.Equal(t, "https://new.example.com/new", *data.Request.URL)
+				assert.Equal(t, "unknown", *data.Request.ClientIP)
+			}
+		})
 	}
 }
 

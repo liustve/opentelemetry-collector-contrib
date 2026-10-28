@@ -6,7 +6,9 @@ package translator // import "github.com/open-telemetry/opentelemetry-collector-
 import (
 	"cmp"
 	"net"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -25,17 +27,16 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 		dbSystem           string
 		dbInstance         string
 		dbStatement        string
-		dbUser             string
 		// Legacy v1.12.0 values are kept apart so the new keys win regardless of map iteration order.
 		legacySystem    string
 		legacyInstance  string
 		legacyStatement string
-		legacyUser      string
+		dbUser          string
 	)
 
 	for key, value := range attributes {
 		switch key {
-		// New v1.40.0 keys — gate-guarded by EmitV1DB:
+		// New v1.43.0 keys — gate-guarded by EmitV1DB:
 		case string(conventions.DBNamespaceKey):
 			if metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
 				dbInstance = value.Str()
@@ -82,7 +83,7 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 			}
 		case "db.user":
 			if !metadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
-				legacyUser = value.Str()
+				dbUser = value.Str()
 			} else {
 				filtered[key] = value
 			}
@@ -94,7 +95,6 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	dbSystem = cmp.Or(dbSystem, legacySystem)
 	dbInstance = cmp.Or(dbInstance, legacyInstance)
 	dbStatement = cmp.Or(dbStatement, legacyStatement)
-	dbUser = cmp.Or(dbUser, legacyUser)
 
 	if !isSQL(dbSystem) {
 		// Either no DB attributes or this is not an SQL DB.
@@ -106,16 +106,15 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	// current span name instead
 	dbURL = span.Name()
 
-	// Stable DB conventions removed the connection string. Use the recorded
-	// endpoint rather than inventing localhost; retain the legacy format when
-	// an actual legacy connection string is available.
+	// Prefer the recorded endpoint during migration, including spans that
+	// still carry legacy db.* keys. Preserve the old default translation.
 	_, hasStableSystem := span.Attributes().Get(string(conventions.DBSystemNameKey))
 	_, hasStableNamespace := span.Attributes().Get(string(conventions.DBNamespaceKey))
-	stableDB := metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() && (hasStableSystem || hasStableNamespace)
-	if dbConnectionString == "" && stableDB {
-		if host, ok := span.Attributes().Get(string(conventions.ServerAddressKey)); ok {
+	emitV1 := metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled()
+	if emitV1 {
+		if host, ok := span.Attributes().Get(string(conventions.ServerAddressKey)); ok && host.Str() != "" {
 			dbConnectionString = host.Str()
-			if port, ok := span.Attributes().Get(string(conventions.ServerPortKey)); ok && dbConnectionString != "" {
+			if port, ok := span.Attributes().Get(string(conventions.ServerPortKey)); ok {
 				portStr := port.Str()
 				if portStr == "" {
 					portStr = strconv.FormatInt(port.Int(), 10)
@@ -123,7 +122,8 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 				dbConnectionString = net.JoinHostPort(dbConnectionString, portStr)
 			}
 		}
-	} else if dbConnectionString == "" {
+	}
+	if dbConnectionString == "" && (!emitV1 || (!hasStableSystem && !hasStableNamespace)) {
 		dbConnectionString = "localhost"
 	}
 	if dbConnectionString != "" {
@@ -140,13 +140,30 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	return filtered, &sqlData
 }
 
+// databaseHost uses the same endpoint precedence as makeSQL.
+func databaseHost(attributes pcommon.Map) string {
+	if metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
+		if host, ok := attributes.Get(string(conventions.ServerAddressKey)); ok && host.Str() != "" {
+			return host.Str()
+		}
+	}
+	if !metadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
+		if connection, ok := attributes.Get("db.connection_string"); ok {
+			if parsed, _ := url.Parse(strings.TrimPrefix(connection.Str(), "jdbc:")); parsed != nil {
+				return parsed.Hostname()
+			}
+		}
+	}
+	return ""
+}
+
 func isSQL(system string) bool {
 	switch system {
 	// v1.12.0 values (default):
 	// TODO: Remove v1.12.0 system name values when exporter.awsxray.DontEmitV0DBConventions is removed.
 	case "db2", "mssql", "oracle":
 		return true
-	// Unchanged values (present in both v1.12.0 and v1.38.0):
+	// Unchanged values (present in both v1.12.0 and v1.43.0):
 	case "derby",
 		"hive",
 		"mariadb",
@@ -156,7 +173,7 @@ func isSQL(system string) bool {
 		"sqlite",
 		"teradata":
 		return true
-	// v1.38.0 values (only when EmitV1DB is enabled):
+	// v1.43.0 values (only when EmitV1DB is enabled):
 	// TODO: Remove this gate when exporter.awsxray.DontEmitV0DBConventions is removed.
 	case conventions.DBSystemNameIBMDB2.Value.AsString(),
 		conventions.DBSystemNameMicrosoftSQLServer.Value.AsString(),

@@ -17,7 +17,7 @@ feature_gates:
       semconv v1.12.0 database attribute keys. Requires
       exporter.awsxray.EmitV1DBConventions to also be enabled.
     from_version: v0.147.0
-    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533
+    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
   - id: exporter.awsxray.DontEmitV0HTTPNetworkConventions
     stage: alpha
     description: >-
@@ -25,7 +25,16 @@ feature_gates:
       semconv v1.12.0 HTTP and network attribute keys. Requires
       exporter.awsxray.EmitV1HTTPNetworkConventions to also be enabled.
     from_version: v0.147.0
-    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533
+    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
+  - id: exporter.awsxray.DontEmitV0RPCConventions
+    stage: alpha
+    description: >-
+      When enabled, the AWS X-Ray exporter no longer reads deprecated
+      rpc.service and peer.service for generic RPC spans. Requires
+      exporter.awsxray.EmitV1RPCConventions to also be enabled.
+      Documented AWS SDK conventions remain supported.
+    from_version: v0.165.0
+    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
   - id: exporter.awsxray.EmitV1DBConventions
     stage: alpha
     description: >-
@@ -34,7 +43,7 @@ feature_gates:
       db.query.text), preferring them over legacy keys. Legacy database
       users are still read; db.user has no stable replacement.
     from_version: v0.147.0
-    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533
+    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
   - id: exporter.awsxray.EmitV1HTTPNetworkConventions
     stage: alpha
     description: >-
@@ -44,14 +53,14 @@ feature_gates:
       messaging.message.body.size) instead
       of the deprecated v1.12.0 keys when both are present.
     from_version: v0.163.0
-    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/46533
+    reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
   - id: exporter.awsxray.EmitV1RPCConventions
     stage: alpha
     description: >-
       When enabled, the AWS X-Ray exporter reads the semconv v1.43.0
       release candidate RPC conventions, using rpc.system.name and
-      extracting service names from fully-qualified rpc.method values.
-      Legacy RPC attributes remain supported.
+      service.peer.name and extracting service names from fully-qualified
+      rpc.method values. Documented AWS SDK conventions remain supported.
     from_version: v0.165.0
     reference_url: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/22095
   - id: exporter.awsxray.skiptimestampvalidation

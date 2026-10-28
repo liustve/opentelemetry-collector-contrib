@@ -312,7 +312,9 @@ func MakeDocumentFromSegment(segment *awsxray.Segment) (string, error) {
 func isAwsSdkSpan(span ptrace.Span) bool {
 	attributes := span.Attributes()
 	if xraymetadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
-		if rpcSystem, ok := attributes.Get(string(conventions.RPCSystemNameKey)); ok {
+		// Accept a custom migrated shape as opt-in compatibility. The AWS
+		// SDK conventions themselves still require rpc.system=aws-api.
+		if rpcSystem, ok := attributes.Get(string(conventions.RPCSystemNameKey)); ok && rpcSystem.Str() != "" {
 			return rpcSystem.Str() == awsAPIRPCSystem
 		}
 	}
@@ -387,11 +389,17 @@ func MakeSegment(span ptrace.Span, resource pcommon.Resource, indexedAttrs []str
 		}
 	}
 
-	// peer.service should always be prioritized for segment names when it set by users and
-	// the new x-ray specific service name attributes are not found
+	// User-provided peer names take priority after X-Ray-specific service names.
 	if name == "" {
-		if peerService, ok := attributes.Get("peer.service"); ok {
-			name = peerService.Str()
+		if xraymetadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
+			if peerService, ok := attributes.Get(string(conventions.ServicePeerNameKey)); ok {
+				name = peerService.Str()
+			}
+		}
+		if name == "" && !xraymetadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate.IsEnabled() {
+			if peerService, ok := attributes.Get("peer.service"); ok {
+				name = peerService.Str()
+			}
 		}
 	}
 
@@ -418,19 +426,21 @@ func MakeSegment(span ptrace.Span, resource pcommon.Resource, indexedAttrs []str
 		if xraymetadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
 			if dbInstance, ok := attributes.Get(string(conventions.DBNamespaceKey)); ok && dbInstance.Str() != "" {
 				name = dbInstance.Str()
-				if host, ok := attributes.Get(string(conventions.ServerAddressKey)); ok && host.Str() != "" {
-					name += "@" + host.Str()
-				} else if !xraymetadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
-					if dbURL, ok := attributes.Get("db.connection_string"); ok {
-						if parsed, _ := url.Parse(strings.TrimPrefix(dbURL.Str(), "jdbc:")); parsed != nil && parsed.Hostname() != "" {
-							name += "@" + parsed.Hostname()
-						}
-					}
+			}
+			if name == "" && !xraymetadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
+				if dbInstance, ok := attributes.Get("db.name"); ok {
+					name = dbInstance.Str()
+				}
+			}
+			if name != "" {
+				if host := databaseHost(attributes); host != "" {
+					name += "@" + host
 				}
 			}
 		}
 		// TODO: Remove old DB key lookups when exporter.awsxray.DontEmitV0DBConventions is removed.
-		if name == "" && !xraymetadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
+		if name == "" && !xraymetadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() &&
+			!xraymetadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
 			if dbInstance, ok := attributes.Get("db.name"); ok {
 				// For database queries, the segment name convention is <db name>@<db host>
 				name = dbInstance.Str()
@@ -467,22 +477,24 @@ func MakeSegment(span ptrace.Span, resource pcommon.Resource, indexedAttrs []str
 		}
 	}
 
-	if name == "" {
+	// AWS SDK still specifies rpc.system=aws-api and rpc.service, so its
+	// documented attributes remain supported during the generic RPC migration.
+	if name == "" && (!xraymetadata.ExporterAwsxrayDontEmitV0RPCConventionsFeatureGate.IsEnabled() || isAwsSdkSpan(span)) {
 		if rpcservice, ok := attributes.Get("rpc.service"); ok {
 			name = rpcservice.Str()
 		}
 	}
 
 	if name == "" {
-		// TODO: Remove "http.host" lookup when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
-		if !xraymetadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
-			if host, ok := attributes.Get("http.host"); ok {
-				name = host.Str()
-			}
-		}
-		if name == "" && xraymetadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
+		if xraymetadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
 			if addr, ok := attributes.Get(string(conventions.ServerAddressKey)); ok {
 				name = addr.Str()
+			}
+		}
+		// TODO: Remove "http.host" lookup when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
+		if name == "" && !xraymetadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+			if host, ok := attributes.Get("http.host"); ok {
+				name = host.Str()
 			}
 		}
 	}

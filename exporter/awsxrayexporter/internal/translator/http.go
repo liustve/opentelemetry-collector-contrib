@@ -35,6 +35,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 	hasHTTP := false
 	hasHTTPRequestURLAttributes := false
 	hasNetPeerAddr := false
+	emitV1 := metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled()
 
 	for key, value := range span.Attributes().All() {
 		switch key {
@@ -44,8 +45,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			selected, _ := httpAttribute(span.Attributes(), string(conventions.HTTPRequestMethodKey), "http.method")
-			info.Request.Method = awsxray.String(selected.Str())
+			info.Request.Method = awsxray.String(value.Str())
 			hasHTTP = true
 		case string("http.client_ip"):
 			// TODO: Remove when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -61,8 +61,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			selected, _ := httpAttribute(span.Attributes(), string(conventions.UserAgentOriginalKey), "http.user_agent")
-			info.Request.UserAgent = awsxray.String(selected.Str())
+			info.Request.UserAgent = awsxray.String(value.Str())
 			hasHTTP = true
 		case string("http.status_code"), string(conventions.HTTPResponseStatusCodeKey):
 			// TODO: Remove v0 key handling when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -70,8 +69,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			selected, _ := httpAttribute(span.Attributes(), string(conventions.HTTPResponseStatusCodeKey), "http.status_code")
-			info.Response.Status = aws.Int64(selected.Int())
+			info.Response.Status = aws.Int64(value.Int())
 			hasHTTP = true
 		case string("http.url"), string(conventions.URLFullKey):
 			// TODO: Remove v0 key handling when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -79,7 +77,11 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			urlParts[key] = value.Str()
+			if emitV1 {
+				urlParts[key] = value.Str()
+			} else {
+				urlParts["http.url"] = value.Str()
+			}
 			hasHTTP = true
 			hasHTTPRequestURLAttributes = true
 		case string("http.scheme"), string(conventions.URLSchemeKey):
@@ -88,7 +90,11 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				filtered[key] = value
 				break
 			}
-			urlParts[key] = value.Str()
+			if emitV1 {
+				urlParts[key] = value.Str()
+			} else {
+				urlParts["http.scheme"] = value.Str()
+			}
 			hasHTTP = true
 		case string("http.host"):
 			// TODO: Remove when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
@@ -177,8 +183,10 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 				}
 				hasHTTPRequestURLAttributes = true
 				hasNetPeerAddr = true
-				urlParts[key] = value.Str()
-			} else {
+				if emitV1 {
+					urlParts[key] = value.Str()
+				}
+			} else if emitV1 {
 				filtered[key] = value
 			}
 		case string(conventions.NetworkPeerPortKey):
@@ -193,7 +201,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 		case string(conventions.ClientAddressKey):
 			if net.ParseIP(value.Str()) != nil {
 				info.Request.ClientIP = awsxray.String(value.Str())
-			} else {
+			} else if emitV1 {
 				filtered[key] = value
 			}
 		case string(conventions.URLPathKey):
@@ -215,12 +223,28 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 		}
 	}
 
-	// Resolve forwarded client information after iteration so an earlier
-	// network peer or legacy client IP cannot override the preferred value.
-	if value, ok := httpAttribute(span.Attributes(), string(conventions.ClientAddressKey), "http.client_ip"); ok && net.ParseIP(value.Str()) != nil {
-		info.Request.ClientIP = awsxray.String(value.Str())
-	} else if value, ok := httpAttribute(span.Attributes(), string(conventions.NetworkPeerAddressKey), "net.peer.ip"); ok && net.ParseIP(value.Str()) != nil {
-		info.Request.ClientIP = awsxray.String(value.Str())
+	if emitV1 {
+		// Resolve after iteration so dual-read precedence does not depend on
+		// attribute order. Leave the original translation unchanged by default.
+		if value, ok := httpAttribute(span.Attributes().Get, string(conventions.HTTPRequestMethodKey), "http.method"); ok {
+			info.Request.Method = awsxray.String(value.Str())
+		}
+		if value, ok := httpAttribute(span.Attributes().Get, string(conventions.UserAgentOriginalKey), "http.user_agent"); ok {
+			info.Request.UserAgent = awsxray.String(value.Str())
+		}
+		if value, ok := httpAttribute(span.Attributes().Get, string(conventions.HTTPResponseStatusCodeKey), "http.status_code"); ok {
+			info.Response.Status = aws.Int64(value.Int())
+		}
+		info.Request.ClientIP = nil
+		for _, key := range []string{string(conventions.ClientAddressKey), "http.client_ip", string(conventions.NetworkPeerAddressKey), "net.peer.ip"} {
+			if (key == "http.client_ip" || key == "net.peer.ip") && metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+				continue
+			}
+			if value, ok := span.Attributes().Get(key); ok && net.ParseIP(value.Str()) != nil {
+				info.Request.ClientIP = awsxray.String(value.Str())
+				break
+			}
+		}
 	}
 
 	if !hasNetPeerAddr && info.Request.ClientIP != nil {
@@ -230,7 +254,10 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 	if !hasHTTP {
 		// Didn't have any HTTP-specific information so don't need to fill it in segment
 		// Shared network attributes still belong to DB and RPC spans.
-		maps.Insert(filtered, span.Attributes().All())
+		if emitV1 || metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() ||
+			metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
+			maps.Insert(filtered, span.Attributes().All())
+		}
 		return filtered, nil
 	}
 
@@ -268,10 +295,10 @@ func extractResponseSizeFromAttributes(attributes pcommon.Map) int64 {
 		if size, ok := attributes.Get(string(conventions.HTTPResponseBodySizeKey)); ok {
 			return size.Int()
 		}
-	}
-	if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
-		if size, ok := attributes.Get("http.response_content_length"); ok {
-			return size.Int()
+		if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
+			if size, ok := attributes.Get("http.response_content_length"); ok {
+				return size.Int()
+			}
 		}
 	}
 	typeVal, ok := attributes.Get("message.type")
@@ -310,9 +337,10 @@ func constructClientURL(urlParts map[string]string) string {
 	// https://opentelemetry.io/docs/specs/semconv/non-normative/http-migration/#http-client-span-attributes
 	emitV1 := metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled()
 	v1Host, hasV1Host := urlParts[string(conventions.ServerAddressKey)]
+	hasV1Host = hasV1Host && v1Host != ""
 	// TODO: Remove old-key lookups when exporter.awsxray.DontEmitV0HTTPNetworkConventions is removed.
 	host, ok := urlParts[string("http.host")]
-	if !ok || (emitV1 && hasV1Host) {
+	if !ok || (emitV1 && (hasV1Host || host == "")) {
 		if emitV1 && hasV1Host {
 			host = v1Host
 		} else {
@@ -321,15 +349,18 @@ func constructClientURL(urlParts map[string]string) string {
 				host, ok = urlParts[string("net.peer.ip")]
 				if !ok {
 					host = v1Host
-					if host == "" {
+					if emitV1 && host == "" {
 						host = urlParts[string(conventions.NetworkPeerAddressKey)]
 					}
 				}
 			}
 		}
-		port, ok = httpURLPart(urlParts, string(conventions.ServerPortKey), "net.peer.port")
-		if !ok {
-			port = urlParts[string(conventions.NetworkPeerPortKey)]
+		port, ok = urlParts[string(conventions.ServerPortKey)]
+		if !ok || !emitV1 {
+			port, ok = urlParts["net.peer.port"]
+			if !ok {
+				port = urlParts[string(conventions.NetworkPeerPortKey)]
+			}
 		}
 	}
 	url = scheme + "://" + httpURLAuthority(host, port, scheme)
@@ -352,7 +383,7 @@ func constructServerURL(urlParts map[string]string) string {
 	}
 	port := ""
 	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
-		if host, hasServerAddress := urlParts[string(conventions.ServerAddressKey)]; hasServerAddress {
+		if host, hasServerAddress := urlParts[string(conventions.ServerAddressKey)]; hasServerAddress && host != "" {
 			port, _ = httpURLPart(urlParts, string(conventions.ServerPortKey), "net.host.port")
 			url = scheme + "://" + httpURLAuthority(host, port, scheme)
 			return appendHTTPTarget(url, urlParts)
@@ -383,16 +414,10 @@ func constructServerURL(urlParts map[string]string) string {
 }
 
 func httpURLPart(parts map[string]string, stableKey, legacyKey string) (string, bool) {
-	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
-		if value, ok := parts[stableKey]; ok {
-			return value, true
-		}
-	}
-	if value, ok := parts[legacyKey]; ok {
-		return value, true
-	}
-	value, ok := parts[stableKey]
-	return value, ok
+	return httpAttribute(func(key string) (string, bool) {
+		value, ok := parts[key]
+		return value, ok
+	}, stableKey, legacyKey)
 }
 
 func httpURLAuthority(host, port, scheme string) string {
@@ -415,7 +440,7 @@ func appendHTTPTarget(url string, parts map[string]string) string {
 	path, hasPath := parts[string(conventions.URLPathKey)]
 	query, hasQuery := parts[string(conventions.URLQueryKey)]
 	if target, ok := parts["http.target"]; ok &&
-		(!metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() || (!hasPath && !hasQuery)) {
+		(!metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() || !hasPath) {
 		return url + target
 	}
 	if hasPath {
@@ -423,7 +448,7 @@ func appendHTTPTarget(url string, parts map[string]string) string {
 	} else {
 		url += "/"
 	}
-	if hasQuery && query != "" {
+	if hasQuery && (query != "" || !metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled()) {
 		if !strings.HasPrefix(query, "?") {
 			query = "?" + query
 		}
