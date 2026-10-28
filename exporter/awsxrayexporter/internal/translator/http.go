@@ -363,7 +363,7 @@ func constructClientURL(urlParts map[string]string) string {
 			}
 		}
 	}
-	url = scheme + "://" + httpURLAuthority(host, port, scheme)
+	url = scheme + "://" + constructHTTPHostPort(host, port, scheme)
 	return appendHTTPTarget(url, urlParts)
 }
 
@@ -385,7 +385,7 @@ func constructServerURL(urlParts map[string]string) string {
 	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
 		if host, hasServerAddress := urlParts[string(conventions.ServerAddressKey)]; hasServerAddress && host != "" {
 			port, _ = httpURLPart(urlParts, string(conventions.ServerPortKey), "net.host.port")
-			url = scheme + "://" + httpURLAuthority(host, port, scheme)
+			url = scheme + "://" + constructHTTPHostPort(host, port, scheme)
 			return appendHTTPTarget(url, urlParts)
 		}
 	}
@@ -409,18 +409,11 @@ func constructServerURL(urlParts map[string]string) string {
 			}
 		}
 	}
-	url = scheme + "://" + httpURLAuthority(host, port, scheme)
+	url = scheme + "://" + constructHTTPHostPort(host, port, scheme)
 	return appendHTTPTarget(url, urlParts)
 }
 
-func httpURLPart(parts map[string]string, stableKey, legacyKey string) (string, bool) {
-	return httpAttribute(func(key string) (string, bool) {
-		value, ok := parts[key]
-		return value, ok
-	}, stableKey, legacyKey)
-}
-
-func httpURLAuthority(host, port, scheme string) string {
+func constructHTTPHostPort(host, port, scheme string) string {
 	if !metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
 		if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
 			return host + ":" + port
@@ -434,6 +427,13 @@ func httpURLAuthority(host, port, scheme string) string {
 		return "[" + host + "]"
 	}
 	return host
+}
+
+func httpURLPart(parts map[string]string, stableKey, legacyKey string) (string, bool) {
+	return httpAttribute(func(key string) (string, bool) {
+		value, ok := parts[key]
+		return value, ok
+	}, stableKey, legacyKey)
 }
 
 func appendHTTPTarget(url string, parts map[string]string) string {

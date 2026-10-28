@@ -106,8 +106,7 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	// current span name instead
 	dbURL = span.Name()
 
-	// Prefer the recorded endpoint during migration, including spans that
-	// still carry legacy db.* keys. Preserve the old default translation.
+	// Let's keep the original format for connection_string
 	_, hasStableSystem := span.Attributes().Get(string(conventions.DBSystemNameKey))
 	_, hasStableNamespace := span.Attributes().Get(string(conventions.DBNamespaceKey))
 	emitV1 := metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled()
