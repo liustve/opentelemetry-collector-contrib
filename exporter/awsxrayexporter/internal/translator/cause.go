@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	conventionsv125 "go.opentelemetry.io/otel/semconv/v1.25.0"
 	conventions "go.opentelemetry.io/otel/semconv/v1.43.0"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/awsxrayexporter/internal/metadata"
@@ -156,7 +157,7 @@ func makeCause(span ptrace.Span, attributes map[string]pcommon.Value, resource p
 
 	val, ok := span.Attributes().Get(string(conventions.HTTPResponseStatusCodeKey))
 	if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
-		if legacy, exists := span.Attributes().Get("http.status_code"); exists &&
+		if legacy, exists := span.Attributes().Get(string(conventionsv125.HTTPStatusCodeKey)); exists &&
 			(!metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() || !ok) {
 			val, ok = legacy, true
 		}

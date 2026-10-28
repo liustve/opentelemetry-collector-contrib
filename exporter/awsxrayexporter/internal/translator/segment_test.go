@@ -2300,7 +2300,7 @@ func TestMakeSegmentAWSSDKConventionsRemainSupported(t *testing.T) {
 	}
 }
 
-func TestMakeSegmentCustomAWSRPCCompatibilityRequiresOptIn(t *testing.T) {
+func TestMakeSegmentMigratedAWSSDKConventionsRespectRPCGate(t *testing.T) {
 	for testCaseName, tt := range map[string]struct {
 		EmitV1RPCConventions bool
 		spanAWSOperation     string

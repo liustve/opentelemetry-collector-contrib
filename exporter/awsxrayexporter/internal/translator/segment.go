@@ -312,8 +312,7 @@ func MakeDocumentFromSegment(segment *awsxray.Segment) (string, error) {
 func isAwsSdkSpan(span ptrace.Span) bool {
 	attributes := span.Attributes()
 	if xraymetadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
-		// Accept a custom migrated shape as opt-in compatibility. The AWS
-		// SDK conventions themselves still require rpc.system=aws-api.
+		// Recognize migrated AWS SDK spans when newer RPC conventions are enabled.
 		if rpcSystem, ok := attributes.Get(string(conventions.RPCSystemNameKey)); ok && rpcSystem.Str() != "" {
 			return rpcSystem.Str() == awsAPIRPCSystem
 		}

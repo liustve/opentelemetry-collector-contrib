@@ -119,8 +119,8 @@ func makeAws(attributes map[string]pcommon.Value, resource pcommon.Resource, log
 	} else if rpcMethod, ok := attributes[string(conventions.RPCMethodKey)]; ok {
 		operation = rpcMethod.Str()
 		if metadata.ExporterAwsxrayEmitV1RPCConventionsFeatureGate.IsEnabled() {
-			// Compatibility for custom migrated AWS spans; documented AWS
-			// SDK spans continue to use a bare rpc.method.
+			// Migrated AWS SDK instrumentation emits Service/Operation in rpc.method.
+			// X-Ray needs only the operation name.
 			if system, ok := attributes[string(conventions.RPCSystemNameKey)]; ok && system.Str() == awsAPIRPCSystem {
 				if _, method, ok := strings.Cut(operation, "/"); ok && method != "" {
 					operation = method
