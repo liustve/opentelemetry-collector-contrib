@@ -27,11 +27,12 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 		dbSystem           string
 		dbInstance         string
 		dbStatement        string
+		dbUser             string
 		// Legacy v1.12.0 values are kept apart so the new keys win regardless of map iteration order.
 		legacySystem    string
 		legacyInstance  string
 		legacyStatement string
-		dbUser          string
+		legacyUser      string
 	)
 
 	for key, value := range attributes {
@@ -52,6 +53,12 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 		case string(conventions.DBQueryTextKey):
 			if metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
 				dbStatement = value.Str()
+			} else {
+				filtered[key] = value
+			}
+		case string(conventions.UserNameKey):
+			if metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled() {
+				dbUser = value.Str()
 			} else {
 				filtered[key] = value
 			}
@@ -83,7 +90,7 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 			}
 		case "db.user":
 			if !metadata.ExporterAwsxrayDontEmitV0DBConventionsFeatureGate.IsEnabled() {
-				dbUser = value.Str()
+				legacyUser = value.Str()
 			} else {
 				filtered[key] = value
 			}
@@ -95,6 +102,7 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	dbSystem = cmp.Or(dbSystem, legacySystem)
 	dbInstance = cmp.Or(dbInstance, legacyInstance)
 	dbStatement = cmp.Or(dbStatement, legacyStatement)
+	dbUser = cmp.Or(dbUser, legacyUser)
 
 	if !isSQL(dbSystem) {
 		// Either no DB attributes or this is not an SQL DB.

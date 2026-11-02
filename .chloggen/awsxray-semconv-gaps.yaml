@@ -5,5 +5,4 @@ issues: [22095, 46537]
 subtext: |
   Use `exporter.awsxray.EmitV1RPCConventions` for dual-read and enable
   `exporter.awsxray.DontEmitV0RPCConventions` to stop reading legacy generic RPC names.
-  AWS SDK conventions remain supported. With database migration enabled, `user.name`
-  no longer populates the SQL user; `db.user` remains the legacy source.
+  AWS SDK conventions remain supported.

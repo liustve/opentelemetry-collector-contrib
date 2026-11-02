@@ -689,7 +689,7 @@ func TestMakeHTTPServerURLPrefersStableAttributes(t *testing.T) {
 	}
 }
 
-func TestMakeHTTPMigrationURLFallbacks(t *testing.T) {
+func TestMakeHTTPV1URLFallbacks(t *testing.T) {
 	for testCaseName, tt := range map[string]struct {
 		spanKind                     ptrace.SpanKind
 		EmitV1HTTPNetworkConventions bool
@@ -730,7 +730,7 @@ func TestMakeHTTPMigrationURLFallbacks(t *testing.T) {
 	}
 }
 
-func TestMakeHTTPResponseSizeRespectsMigrationGates(t *testing.T) {
+func TestMakeHTTPResponseSizeRespectsV1V0Gates(t *testing.T) {
 	for testCaseName, tt := range map[string]struct {
 		EmitV1HTTPNetworkConventions     bool
 		DontEmitV0HTTPNetworkConventions bool
@@ -849,7 +849,7 @@ func TestMakeHTTPClientIPPrecedenceIgnoresInvalidValues(t *testing.T) {
 	}
 }
 
-func TestMakeHTTPNonHTTPAttributesRequireMigrationGate(t *testing.T) {
+func TestMakeHTTPNonHTTPAttributesRequireV1Gate(t *testing.T) {
 	for testCaseName, mode := range map[string]struct {
 		EmitV1HTTPNetworkConventions bool
 		EmitV1DBConventions          bool

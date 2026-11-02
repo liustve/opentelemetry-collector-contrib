@@ -45,7 +45,7 @@ func TestClientSpanWithNewAndLegacyDBAttributesPrefersNew(t *testing.T) {
 		assert.Equal(t, "postgresql", *sqlData.DatabaseType)
 		assert.Nil(t, sqlData.ConnectionString)
 		assert.Equal(t, "SELECT 1", *sqlData.SanitizedQuery)
-		assert.Equal(t, "legacy_user", *sqlData.User)
+		assert.Equal(t, "new_user", *sqlData.User)
 	}
 }
 
@@ -149,7 +149,7 @@ func constructSQLSpan(attributes map[string]pcommon.Value) ptrace.Span {
 	return span
 }
 
-func TestMakeSQLStableEndpointAndNoUserNameMapping(t *testing.T) {
+func TestMakeSQLStableEndpoint(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
 	for testCaseName, tt := range map[string]struct {
 		spanServerAddress                                    string
@@ -164,7 +164,7 @@ func TestMakeSQLStableEndpointAndNoUserNameMapping(t *testing.T) {
 		"empty_host_falls_back_to_old_connection": {spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "mysql://legacy.example.com:3306/orders", expectedSegmentName: "orders@legacy.example.com"},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
-			spanAttributes := map[string]any{"db.system.name": "postgresql", "db.namespace": "orders", "db.query.text": "SELECT $1", "server.address": tt.spanServerAddress, "server.port": int64(5432), "user.name": "application-user"}
+			spanAttributes := map[string]any{"db.system.name": "postgresql", "db.namespace": "orders", "db.query.text": "SELECT $1", "server.address": tt.spanServerAddress, "server.port": int64(5432)}
 			if tt.useLegacySpanDBAttributes {
 				delete(spanAttributes, "db.system.name")
 				delete(spanAttributes, "db.namespace")
@@ -182,10 +182,7 @@ func TestMakeSQLStableEndpointAndNoUserNameMapping(t *testing.T) {
 			require.NotNil(t, segmentSQL)
 			require.NotNil(t, segmentSQL.ConnectionString)
 			assert.Equal(t, tt.expectedSegmentConnectionString, *segmentSQL.ConnectionString)
-			assert.Nil(t, segmentSQL.User)
-			require.Contains(t, remainingSpanAttributesAfterSQL, "user.name")
 			require.Contains(t, remainingSpanAttributesAfterSQL, "server.address")
-			assert.Equal(t, "application-user", remainingSpanAttributesAfterSQL["user.name"].Str())
 			segment, err := MakeSegment(span, pcommon.NewResource(), nil, false, nil, false)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedSegmentName, *segment.Name)
@@ -234,13 +231,11 @@ func TestMakeSQLMixedConventionsRespectFeatureGates(t *testing.T) {
 				"db.query.summary":     "SELECT orders",
 				"server.address":       "db.example.com",
 				"server.port":          int64(5432),
-				"user.name":            "application-user",
 			})
 			remainingSpanAttributesAfterHTTP, _ := makeHTTP(span)
 			remainingSpanAttributesAfterSQL, segmentSQL := makeSQL(span, remainingSpanAttributesAfterHTTP)
 			require.NotNil(t, segmentSQL)
 			require.Contains(t, remainingSpanAttributesAfterSQL, "db.query.summary")
-			require.Contains(t, remainingSpanAttributesAfterSQL, "user.name")
 			if !mode.EmitV1DBConventions {
 				assert.Equal(t, "mysql", *segmentSQL.DatabaseType)
 				assert.Equal(t, "SELECT 2", *segmentSQL.SanitizedQuery)

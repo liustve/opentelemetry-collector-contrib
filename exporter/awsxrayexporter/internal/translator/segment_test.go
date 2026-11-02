@@ -2236,7 +2236,7 @@ func TestMakeSegmentMixedRPCConventionsRespectFeatureGates(t *testing.T) {
 	}
 }
 
-func TestMakeSegmentRPCNamesRespectMigrationGates(t *testing.T) {
+func TestMakeSegmentRPCNamesRespectV1V0Gates(t *testing.T) {
 	for testCaseName, tt := range map[string]struct {
 		EmitV1RPCConventions, DontEmitV0RPCConventions bool
 		spanAttributes                                 map[string]any
@@ -2351,12 +2351,12 @@ func TestMakeSegmentHTTPNameAndURLUseSameHost(t *testing.T) {
 	}
 }
 
-func TestMakeSegmentSharedNetworkMetadataRequiresMigrationGate(t *testing.T) {
+func TestMakeSegmentSharedNetworkMetadataRequiresV1Gate(t *testing.T) {
 	for testCaseName, mode := range map[string]struct {
 		EmitV1DBConventions bool
 	}{
-		"default":   {EmitV1DBConventions: false},
-		"migration": {EmitV1DBConventions: true},
+		"default": {EmitV1DBConventions: false},
+		"emitV1":  {EmitV1DBConventions: true},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if mode.EmitV1DBConventions {
