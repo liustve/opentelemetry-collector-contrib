@@ -149,7 +149,7 @@ func constructSQLSpan(attributes map[string]pcommon.Value) ptrace.Span {
 	return span
 }
 
-func TestMakeSQLStableEndpoint(t *testing.T) {
+func TestMakeSQLV1Endpoint(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
 	for testCaseName, tt := range map[string]struct {
 		spanServerAddress                                    string
@@ -157,11 +157,11 @@ func TestMakeSQLStableEndpoint(t *testing.T) {
 		spanDBConnectionString                               string
 		expectedSegmentConnectionString, expectedSegmentName string
 	}{
-		"new_endpoint":                            {spanServerAddress: "db.example.com", expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
-		"ipv6_endpoint":                           {spanServerAddress: "2001:db8::1", expectedSegmentConnectionString: "[2001:db8::1]:5432/orders", expectedSegmentName: "orders@2001:db8::1"},
-		"legacy_db_keys_with_new_endpoint":        {spanServerAddress: "db.example.com", useLegacySpanDBAttributes: true, expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
-		"new_endpoint_wins_over_old_connection":   {spanServerAddress: "db.example.com", spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
-		"empty_host_falls_back_to_old_connection": {spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "mysql://legacy.example.com:3306/orders", expectedSegmentName: "orders@legacy.example.com"},
+		"v1_endpoint":                            {spanServerAddress: "db.example.com", expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
+		"ipv6_endpoint":                          {spanServerAddress: "2001:db8::1", expectedSegmentConnectionString: "[2001:db8::1]:5432/orders", expectedSegmentName: "orders@2001:db8::1"},
+		"v0_db_keys_with_v1_endpoint":            {spanServerAddress: "db.example.com", useLegacySpanDBAttributes: true, expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
+		"v1_endpoint_wins_over_v0_connection":    {spanServerAddress: "db.example.com", spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "db.example.com:5432/orders", expectedSegmentName: "orders@db.example.com"},
+		"empty_host_falls_back_to_v0_connection": {spanDBConnectionString: "mysql://legacy.example.com:3306", expectedSegmentConnectionString: "mysql://legacy.example.com:3306/orders", expectedSegmentName: "orders@legacy.example.com"},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			spanAttributes := map[string]any{"db.system.name": "postgresql", "db.namespace": "orders", "db.query.text": "SELECT $1", "server.address": tt.spanServerAddress, "server.port": int64(5432)}
@@ -191,7 +191,7 @@ func TestMakeSQLStableEndpoint(t *testing.T) {
 	}
 }
 
-func TestMakeSQLStableDBWithoutEndpointOmitsConnectionString(t *testing.T) {
+func TestMakeSQLV1DBWithoutEndpointOmitsConnectionString(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
 	span := constructHTTPClientSpan(map[string]any{
 		"db.system.name": "postgresql",
@@ -208,9 +208,9 @@ func TestMakeSQLMixedConventionsRespectFeatureGates(t *testing.T) {
 		EmitV1DBConventions     bool
 		DontEmitV0DBConventions bool
 	}{
-		"default": {EmitV1DBConventions: false, DontEmitV0DBConventions: false},
-		"dual":    {EmitV1DBConventions: true, DontEmitV0DBConventions: false},
-		"stable":  {EmitV1DBConventions: true, DontEmitV0DBConventions: true},
+		"default":   {EmitV1DBConventions: false, DontEmitV0DBConventions: false},
+		"v0_and_v1": {EmitV1DBConventions: true, DontEmitV0DBConventions: false},
+		"v1_only":   {EmitV1DBConventions: true, DontEmitV0DBConventions: true},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if mode.EmitV1DBConventions {

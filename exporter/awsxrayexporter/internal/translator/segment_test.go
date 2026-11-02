@@ -2165,7 +2165,7 @@ func newTraceID() pcommon.TraceID {
 	return r
 }
 
-func TestMakeSegmentDBNameFallsBackToLegacyConnectionHost(t *testing.T) {
+func TestMakeSegmentDBNameFallsBackToV0ConnectionHost(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate)
 	for testCaseName, tt := range map[string]struct {
 		spanAttributes          map[string]any
@@ -2173,9 +2173,9 @@ func TestMakeSegmentDBNameFallsBackToLegacyConnectionHost(t *testing.T) {
 		expectedSegmentName     string
 	}{
 		"connection_host_fallback":                        {spanAttributes: map[string]any{"db.namespace": "orders", "db.connection_string": "jdbc:postgresql://db.example.com:5432"}, expectedSegmentName: "orders@db.example.com"},
-		"empty_namespace_uses_legacy_name_and_new_host":   {spanAttributes: map[string]any{"db.namespace": "", "db.name": "orders", "server.address": "db.example.com", "db.connection_string": "jdbc:postgresql://legacy.example.com:5432"}, expectedSegmentName: "orders@db.example.com"},
+		"empty_namespace_uses_v0_name_and_v1_host":        {spanAttributes: map[string]any{"db.namespace": "", "db.name": "orders", "server.address": "db.example.com", "db.connection_string": "jdbc:postgresql://legacy.example.com:5432"}, expectedSegmentName: "orders@db.example.com"},
 		"empty_namespace_does_not_produce_host_only_name": {spanAttributes: map[string]any{"db.namespace": "", "server.address": "db.example.com"}, expectedSegmentName: "FallbackService"},
-		"stable_mode_ignores_legacy_connection":           {DontEmitV0DBConventions: true, spanAttributes: map[string]any{"db.namespace": "orders", "db.connection_string": "jdbc:postgresql://legacy.example.com:5432"}, expectedSegmentName: "orders"},
+		"v1_only_ignores_v0_connection":                   {DontEmitV0DBConventions: true, spanAttributes: map[string]any{"db.namespace": "orders", "db.connection_string": "jdbc:postgresql://legacy.example.com:5432"}, expectedSegmentName: "orders"},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if tt.DontEmitV0DBConventions {
@@ -2195,9 +2195,9 @@ func TestMakeSegmentMixedRPCConventionsRespectFeatureGates(t *testing.T) {
 		EmitV1RPCConventions     bool
 		DontEmitV0RPCConventions bool
 	}{
-		"default": {EmitV1RPCConventions: false, DontEmitV0RPCConventions: false},
-		"dual":    {EmitV1RPCConventions: true, DontEmitV0RPCConventions: false},
-		"stable":  {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true},
+		"default":   {EmitV1RPCConventions: false, DontEmitV0RPCConventions: false},
+		"v0_and_v1": {EmitV1RPCConventions: true, DontEmitV0RPCConventions: false},
+		"v1_only":   {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if mode.EmitV1RPCConventions {
@@ -2243,12 +2243,12 @@ func TestMakeSegmentRPCNamesRespectV1V0Gates(t *testing.T) {
 		expectedSegmentName                            string
 	}{
 		"default_peer_name":              {spanAttributes: map[string]any{"peer.service": "OldPeer", "service.peer.name": "NewPeer"}, expectedSegmentName: "OldPeer"},
-		"dual_peer_name":                 {EmitV1RPCConventions: true, spanAttributes: map[string]any{"peer.service": "OldPeer", "service.peer.name": "NewPeer"}, expectedSegmentName: "NewPeer"},
-		"stable_old_peer_ignored":        {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"peer.service": "OldPeer"}, expectedSegmentName: "FallbackService"},
-		"stable_new_peer_name":           {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"service.peer.name": "NewPeer"}, expectedSegmentName: "NewPeer"},
-		"dual_old_rpc_service":           {EmitV1RPCConventions: true, spanAttributes: map[string]any{"rpc.system": "grpc", "rpc.service": "LegacyService", "rpc.method": "GetItem"}, expectedSegmentName: "LegacyService"},
-		"stable_old_rpc_service_ignored": {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"rpc.system": "grpc", "rpc.service": "LegacyService", "rpc.method": "GetItem"}, expectedSegmentName: "FallbackService"},
-		"stable_new_rpc_service":         {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"rpc.system.name": "grpc", "rpc.method": "com.example.Inventory/GetItem"}, expectedSegmentName: "com.example.Inventory"},
+		"v0_and_v1_peer_name":            {EmitV1RPCConventions: true, spanAttributes: map[string]any{"peer.service": "OldPeer", "service.peer.name": "NewPeer"}, expectedSegmentName: "NewPeer"},
+		"v1_only_v0_peer_ignored":        {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"peer.service": "OldPeer"}, expectedSegmentName: "FallbackService"},
+		"v1_only_v1_peer_name":           {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"service.peer.name": "NewPeer"}, expectedSegmentName: "NewPeer"},
+		"v0_and_v1_v0_rpc_service":       {EmitV1RPCConventions: true, spanAttributes: map[string]any{"rpc.system": "grpc", "rpc.service": "LegacyService", "rpc.method": "GetItem"}, expectedSegmentName: "LegacyService"},
+		"v1_only_v0_rpc_service_ignored": {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"rpc.system": "grpc", "rpc.service": "LegacyService", "rpc.method": "GetItem"}, expectedSegmentName: "FallbackService"},
+		"v1_only_v1_rpc_service":         {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true, spanAttributes: map[string]any{"rpc.system.name": "grpc", "rpc.method": "com.example.Inventory/GetItem"}, expectedSegmentName: "com.example.Inventory"},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if tt.EmitV1RPCConventions {
@@ -2272,9 +2272,9 @@ func TestMakeSegmentAWSSDKConventionsRemainSupported(t *testing.T) {
 		EmitV1RPCConventions     bool
 		DontEmitV0RPCConventions bool
 	}{
-		"default": {EmitV1RPCConventions: false, DontEmitV0RPCConventions: false},
-		"dual":    {EmitV1RPCConventions: true, DontEmitV0RPCConventions: false},
-		"stable":  {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true},
+		"default":   {EmitV1RPCConventions: false, DontEmitV0RPCConventions: false},
+		"v0_and_v1": {EmitV1RPCConventions: true, DontEmitV0RPCConventions: false},
+		"v1_only":   {EmitV1RPCConventions: true, DontEmitV0RPCConventions: true},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if mode.EmitV1RPCConventions {
@@ -2336,7 +2336,7 @@ func TestMakeSegmentMigratedAWSSDKConventionsRespectRPCGate(t *testing.T) {
 func TestMakeSegmentHTTPNameAndURLUseSameHost(t *testing.T) {
 	for testCaseName, tt := range map[string]struct {
 		spanServerAddress, expectedSegmentName string
-	}{"new_host": {spanServerAddress: "new.example.com", expectedSegmentName: "new.example.com"}, "empty_new_host": {expectedSegmentName: "old.example.com"}} {
+	}{"v1_host": {spanServerAddress: "new.example.com", expectedSegmentName: "new.example.com"}, "empty_v1_host": {expectedSegmentName: "old.example.com"}} {
 		t.Run(testCaseName, func(t *testing.T) {
 			enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
 			for _, spanKind := range []ptrace.SpanKind{ptrace.SpanKindClient, ptrace.SpanKindServer} {

@@ -617,13 +617,13 @@ func constructHTTPServerSpan(attributes map[string]any) ptrace.Span {
 	return span
 }
 
-func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
+func TestMakeHTTPMixedConventionsPreferV1OverV0(t *testing.T) {
 	for testCaseName, mode := range map[string]struct {
 		EmitV1HTTPNetworkConventions     bool
 		DontEmitV0HTTPNetworkConventions bool
 	}{
-		"dual":   {EmitV1HTTPNetworkConventions: true, DontEmitV0HTTPNetworkConventions: false},
-		"stable": {EmitV1HTTPNetworkConventions: true, DontEmitV0HTTPNetworkConventions: true},
+		"v0_and_v1": {EmitV1HTTPNetworkConventions: true, DontEmitV0HTTPNetworkConventions: false},
+		"v1_only":   {EmitV1HTTPNetworkConventions: true, DontEmitV0HTTPNetworkConventions: true},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			if mode.EmitV1HTTPNetworkConventions {
@@ -668,7 +668,7 @@ func TestMakeHTTPMixedConventionsUseDeterministicPrecedence(t *testing.T) {
 	}
 }
 
-func TestMakeHTTPServerURLPrefersStableAttributes(t *testing.T) {
+func TestMakeHTTPServerURLPrefersV1Attributes(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
 	for testCaseName, tt := range map[string]struct {
 		reverse bool
@@ -701,7 +701,7 @@ func TestMakeHTTPV1URLFallbacks(t *testing.T) {
 		"peer_ipv6_custom_port":   {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"network.peer.address": "2001:db8::1", "network.peer.port": int64(8443)}, expectedSegmentURL: "https://[2001:db8::1]:8443/p"},
 		"server_ipv6_no_port":     {spanKind: ptrace.SpanKindServer, EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "2001:db8::2"}, expectedSegmentURL: "https://[2001:db8::2]/p"},
 		"server_ipv6_custom_port": {spanKind: ptrace.SpanKindServer, EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "2001:db8::2", "server.port": int64(8443)}, expectedSegmentURL: "https://[2001:db8::2]:8443/p"},
-		"query_without_new_path":  {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "api.example.com", "http.target": "/api/orders?x=1", "url.query": "x=1"}, expectedSegmentURL: "https://api.example.com/api/orders?x=1"},
+		"query_without_v1_path":   {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "api.example.com", "http.target": "/api/orders?x=1", "url.query": "x=1"}, expectedSegmentURL: "https://api.example.com/api/orders?x=1"},
 		"empty_client_host":       {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, expectedSegmentURL: "https://old.example.com:8080/p"},
 		"empty_server_host":       {spanKind: ptrace.SpanKindServer, EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "", "http.host": "old.example.com:8080"}, expectedSegmentURL: "https://old.example.com:8080/p"},
 		"empty_query":             {EmitV1HTTPNetworkConventions: true, spanAttributes: map[string]any{"server.address": "api.example.com", "url.query": ""}, expectedSegmentURL: "https://api.example.com/p"},
@@ -712,7 +712,7 @@ func TestMakeHTTPV1URLFallbacks(t *testing.T) {
 			}
 			span := constructHTTPClientSpan(map[string]any{"http.request.method": "GET", "url.scheme": "https"})
 			span.Attributes().PutStr("url.path", "/p")
-			if testCaseName == "query_without_new_path" {
+			if testCaseName == "query_without_v1_path" {
 				span.Attributes().Remove("url.path")
 			}
 			for key, value := range tt.spanAttributes {
@@ -738,19 +738,19 @@ func TestMakeHTTPResponseSizeRespectsV1V0Gates(t *testing.T) {
 		spanEventAttributes              map[string]any
 		expectedSegmentContentLength     int64
 	}{
-		"default ignores legacy HTTP size": {
+		"default ignores v0 HTTP size": {
 			EmitV1HTTPNetworkConventions:     false,
 			DontEmitV0HTTPNetworkConventions: false,
 			spanAttributes:                   map[string]any{"http.response_content_length": int64(123)},
 			expectedSegmentContentLength:     0,
 		},
-		"dual read falls back to legacy HTTP size": {
+		"v0 and v1 falls back to v0 HTTP size": {
 			EmitV1HTTPNetworkConventions:     true,
 			DontEmitV0HTTPNetworkConventions: false,
 			spanAttributes:                   map[string]any{"http.response_content_length": int64(123)},
 			expectedSegmentContentLength:     123,
 		},
-		"dual read prefers new HTTP size": {
+		"v0 and v1 prefers v1 HTTP size": {
 			EmitV1HTTPNetworkConventions:     true,
 			DontEmitV0HTTPNetworkConventions: false,
 			spanAttributes: map[string]any{
@@ -759,13 +759,13 @@ func TestMakeHTTPResponseSizeRespectsV1V0Gates(t *testing.T) {
 			},
 			expectedSegmentContentLength: 456,
 		},
-		"legacy disabled ignores legacy HTTP size": {
+		"v0 disabled ignores v0 HTTP size": {
 			EmitV1HTTPNetworkConventions:     true,
 			DontEmitV0HTTPNetworkConventions: true,
 			spanAttributes:                   map[string]any{"http.response_content_length": int64(123)},
 			expectedSegmentContentLength:     0,
 		},
-		"default prefers legacy message size": {
+		"default prefers v0 message size": {
 			EmitV1HTTPNetworkConventions:     false,
 			DontEmitV0HTTPNetworkConventions: false,
 			spanAttributes: map[string]any{
@@ -775,7 +775,7 @@ func TestMakeHTTPResponseSizeRespectsV1V0Gates(t *testing.T) {
 			},
 			expectedSegmentContentLength: 123,
 		},
-		"dual read prefers new message size": {
+		"v0 and v1 prefers v1 message size": {
 			EmitV1HTTPNetworkConventions:     true,
 			DontEmitV0HTTPNetworkConventions: false,
 			spanAttributes: map[string]any{
@@ -785,7 +785,7 @@ func TestMakeHTTPResponseSizeRespectsV1V0Gates(t *testing.T) {
 			},
 			expectedSegmentContentLength: 456,
 		},
-		"legacy disabled ignores legacy message size": {
+		"v0 disabled ignores v0 message size": {
 			EmitV1HTTPNetworkConventions:     true,
 			DontEmitV0HTTPNetworkConventions: true,
 			spanAttributes: map[string]any{
@@ -794,7 +794,7 @@ func TestMakeHTTPResponseSizeRespectsV1V0Gates(t *testing.T) {
 			},
 			expectedSegmentContentLength: 0,
 		},
-		"new HTTP size is read from an event": {
+		"v1 HTTP size is read from an event": {
 			EmitV1HTTPNetworkConventions:     true,
 			DontEmitV0HTTPNetworkConventions: false,
 			spanEventAttributes:              map[string]any{"http.response.body.size": int64(456)},
@@ -826,9 +826,9 @@ func TestMakeHTTPClientIPPrecedenceIgnoresInvalidValues(t *testing.T) {
 		spanAttributes          map[string]any
 		expectedSegmentClientIP string
 	}{
-		"invalid_legacy_forwarded_ip":         {spanAttributes: map[string]any{"http.client_ip": "unknown", "client.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.2"},
-		"new_peer_wins":                       {spanAttributes: map[string]any{"net.peer.ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.2"},
-		"legacy_forwarded_fallback":           {spanAttributes: map[string]any{"client.address": "proxy.example.com", "http.client_ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.1"},
+		"invalid_v0_forwarded_ip":             {spanAttributes: map[string]any{"http.client_ip": "unknown", "client.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.2"},
+		"v1_peer_wins":                        {spanAttributes: map[string]any{"net.peer.ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.2"},
+		"v0_forwarded_fallback":               {spanAttributes: map[string]any{"client.address": "proxy.example.com", "http.client_ip": "192.0.2.1", "network.peer.address": "192.0.2.2"}, expectedSegmentClientIP: "192.0.2.1"},
 		"non_ip_addresses_are_not_client_ips": {spanAttributes: map[string]any{"client.address": "client.example.com", "http.client_ip": "unknown", "network.peer.address": "peer.example.com"}},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
@@ -893,7 +893,7 @@ func TestMakeHTTPDefaultOutputUnchanged(t *testing.T) {
 		"peer_not_used_as_url_host":       {spanAttributes: map[string]any{"network.peer.address": "2001:db8::1", "url.scheme": "https", "url.path": "/p"}, expectedSegmentURL: "https:///p"},
 		"empty_query_keeps_question_mark": {spanAttributes: map[string]any{"server.address": "api.example.com", "url.scheme": "https", "url.path": "/p", "url.query": ""}, expectedSegmentURL: "https://api.example.com/p?"},
 		"non_ip_addresses_dropped":        {spanAttributes: map[string]any{"client.address": "client.example.com", "network.peer.address": "peer.example.com"}},
-		"legacy_http_size_not_read":       {spanAttributes: map[string]any{"http.response_content_length": int64(123)}},
+		"v0_http_size_not_read":           {spanAttributes: map[string]any{"http.response_content_length": int64(123)}},
 	} {
 		t.Run(testCaseName, func(t *testing.T) {
 			span := constructHTTPClientSpan(tt.spanAttributes)

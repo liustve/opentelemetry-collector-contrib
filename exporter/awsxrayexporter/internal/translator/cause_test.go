@@ -1497,7 +1497,7 @@ created by testing.(*T).Run
 	assert.Equal(t, isRemote, *exceptions[0].Remote)
 }
 
-func TestMakeCauseLegacyHTTPStatusIgnoredWhenDisabled(t *testing.T) {
+func TestMakeCauseV0HTTPStatusIgnoredWhenDisabled(t *testing.T) {
 	enableGate(t, metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate)
 	enableGate(t, metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate)
 	span := constructHTTPClientSpan(map[string]any{"http.status_code": 429})

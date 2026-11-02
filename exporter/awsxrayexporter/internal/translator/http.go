@@ -239,7 +239,7 @@ func makeHTTP(span ptrace.Span) (map[string]pcommon.Value, *awsxray.HTTPData) {
 	}
 
 	if emitV1 {
-		// Resolve after iteration so dual-read precedence does not depend on
+		// Resolve after iteration so v1-over-v0 precedence does not depend on
 		// attribute order. Leave the original translation unchanged by default.
 		info.Request.ClientIP = nil
 		for _, key := range []string{string(conventions.ClientAddressKey), "http.client_ip", string(conventions.NetworkPeerAddressKey), "net.peer.ip"} {
@@ -435,18 +435,18 @@ func constructHTTPHostPort(host, port, scheme string) string {
 	return host
 }
 
-func httpURLPart(parts map[string]string, stableKey, legacyKey string) (string, bool) {
+func httpURLPart(parts map[string]string, v1Key, v0Key string) (string, bool) {
 	if metadata.ExporterAwsxrayEmitV1HTTPNetworkConventionsFeatureGate.IsEnabled() {
-		if value, ok := parts[stableKey]; ok {
+		if value, ok := parts[v1Key]; ok {
 			return value, true
 		}
 	}
 	if !metadata.ExporterAwsxrayDontEmitV0HTTPNetworkConventionsFeatureGate.IsEnabled() {
-		if value, ok := parts[legacyKey]; ok {
+		if value, ok := parts[v0Key]; ok {
 			return value, true
 		}
 	}
-	value, ok := parts[stableKey]
+	value, ok := parts[v1Key]
 	return value, ok
 }
 

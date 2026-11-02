@@ -78,17 +78,17 @@ func TestNewTracesExporterWithClientRPCGateValidation(t *testing.T) {
 			DontEmitV0RPCConventions: false,
 			shouldReturnError:        false,
 		},
-		"new RPC with legacy fallback allows startup": {
+		"v1 RPC with v0 fallback allows startup": {
 			EmitV1RPCConventions:     true,
 			DontEmitV0RPCConventions: false,
 			shouldReturnError:        false,
 		},
-		"new RPC with legacy disabled allows startup": {
+		"v1 RPC with v0 disabled allows startup": {
 			EmitV1RPCConventions:     true,
 			DontEmitV0RPCConventions: true,
 			shouldReturnError:        false,
 		},
-		"legacy disabled without new RPC rejects startup": {
+		"v0 disabled without v1 RPC rejects startup": {
 			EmitV1RPCConventions:     false,
 			DontEmitV0RPCConventions: true,
 			shouldReturnError:        true,

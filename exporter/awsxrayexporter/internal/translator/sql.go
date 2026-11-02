@@ -115,8 +115,8 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 	dbURL = span.Name()
 
 	// Let's keep the original format for connection_string
-	_, hasStableSystem := span.Attributes().Get(string(conventions.DBSystemNameKey))
-	_, hasStableNamespace := span.Attributes().Get(string(conventions.DBNamespaceKey))
+	_, hasV1System := span.Attributes().Get(string(conventions.DBSystemNameKey))
+	_, hasV1Namespace := span.Attributes().Get(string(conventions.DBNamespaceKey))
 	emitV1 := metadata.ExporterAwsxrayEmitV1DBConventionsFeatureGate.IsEnabled()
 	if emitV1 {
 		if host, ok := span.Attributes().Get(string(conventions.ServerAddressKey)); ok && host.Str() != "" {
@@ -130,7 +130,7 @@ func makeSQL(span ptrace.Span, attributes map[string]pcommon.Value) (map[string]
 			}
 		}
 	}
-	if dbConnectionString == "" && (!emitV1 || (!hasStableSystem && !hasStableNamespace)) {
+	if dbConnectionString == "" && (!emitV1 || (!hasV1System && !hasV1Namespace)) {
 		dbConnectionString = "localhost"
 	}
 	if dbConnectionString != "" {
